@@ -120,10 +120,19 @@ class CDVPhotos: CDVPlugin {
     }
     
     private func valueFrom<T>(dictionary: [AnyHashable: Any], byKey key: String, default defaultValue: T) -> T {
-        guard let value = dictionary[key] as? T, value as? NSNull != NSNull() else {
+        guard let value = dictionary[key], value as? NSNull != NSNull() else {
             return defaultValue
         }
-        return value
+
+        if let typedValue = value as? T {
+            return typedValue
+        }
+
+        if let number = value as? NSNumber, T.self == String.self {
+            return number.stringValue as? T ?? defaultValue
+        }
+
+        return defaultValue
     }
 
     private func isNull(_ value: Any?) -> Bool {
@@ -143,6 +152,11 @@ class CDVPhotos: CDVPlugin {
     
     private func success(command: CDVInvokedUrlCommand, array: [Any]) {
         let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: array)
+        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+    }
+    
+    private func success(command: CDVInvokedUrlCommand, json: [String:String]) {
+        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: json)
         self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
     }
 
@@ -209,12 +223,8 @@ class CDVPhotos: CDVPlugin {
     func getPhotoLibraryAuthorization(command: CDVInvokedUrlCommand) {
         self.commandDelegate.run { [weak self] in
             guard let self = self else { return }
-            do {
                 let status = self.getPhotoLibraryAuthorizationStatusString()
                 self.success(command: command, message: status)
-            } catch {
-                self.failure(command: command, message: "Bad Error NSException") // Consider more specific error
-            }
         }
     }
 
@@ -222,15 +232,11 @@ class CDVPhotos: CDVPlugin {
     func requestPhotoLibraryAuthorization(command: CDVInvokedUrlCommand) {
         self.commandDelegate.run { [weak self] in
             guard let self = self else { return }
-            do {
                 PHPhotoLibrary.requestAuthorization { [weak self] authStatus in
                     guard let self = self else { return }
                     let statusString = self.getPhotoLibraryAuthorizationStatusString(for: authStatus)
                     self.success(command: command, message: statusString)
                 }
-            } catch {
-                 self.failure(command: command, message: "Bad Error NSException") // Consider more specific error
-            }
         }
     }
 
@@ -281,7 +287,7 @@ class CDVPhotos: CDVPlugin {
         } else if mode == Constants.pCModeSmart {
             return PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .any, options: nil) as? PHFetchResult<PHCollection>
         } else if mode == Constants.pCModeAlbums {
-            return PHCollectionList.fetchTopLevelUserCollections(with: nil) as? PHFetchResult<PHCollection>
+            return PHCollectionList.fetchTopLevelUserCollections(with: nil) as PHFetchResult<PHCollection>
         } else if mode == Constants.pCModeMoments {
             return PHAssetCollection.fetchAssetCollections(with: .moment, subtype: .any, options: nil) as? PHFetchResult<PHCollection>
         } else {
@@ -408,6 +414,7 @@ class CDVPhotos: CDVPlugin {
         guard let currentCommand = self.photosCommand else { return nil }
         
         let options: [String: Any] = self.arg(of: currentCommand, at: 1, default: [:] as [String: Any])
+        print("fetchAllMedia options: \(options)")
         let offset = valueFrom(dictionary: options, byKey: Constants.pListOffset, default: "0").toInt() ?? 0
         let limit = valueFrom(dictionary: options, byKey: Constants.pListLimit, default: "0").toInt() ?? 0
 
@@ -506,6 +513,7 @@ class CDVPhotos: CDVPlugin {
         guard let currentCommand = self.photosCommand else { return nil }
 
         let options: [String: Any] = self.arg(of: currentCommand, at: 1, default: [:] as [String: Any])
+        print("fetchMediaFromCollections options: \(options)")
         let offset = valueFrom(dictionary: options, byKey: Constants.pListOffset, default: "0").toInt() ?? 0
         let limit = valueFrom(dictionary: options, byKey: Constants.pListLimit, default: "0").toInt() ?? 0
         
@@ -947,12 +955,8 @@ class CDVPhotos: CDVPlugin {
                     guard let self = self else { return }
                     switch session.status {
                     case .completed:
-                        do {
 							let result = ["type":"download_complete","uri": outputFilePath.absoluteString]
-                            self.success(command: command, data: result)
-                        } catch {
-                            self.failure(command: command, message: "Failed to read exported video data: \(error.localizedDescription)")
-                        }
+                            self.success(command: command, json: result)
                         // Clean up temporary file
                         try? fileManager.removeItem(at: outputFilePath)
                     case .failed:
