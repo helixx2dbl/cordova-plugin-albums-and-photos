@@ -94,6 +94,17 @@ var Photos = {
 		exec(successCallback, errorCallback, "Photos", "video", [videoId]);
 	},
 
+	pickPhotos: function (options, successCallback, errorCallback) {
+		if (typeof options === "function") {
+			errorCallback = successCallback;
+			successCallback = options;
+			options = null;
+		}
+		exec(successCallback, errorCallback, "Photos", "pickPhotos", [
+			options || {}
+		]);
+	},
+
 	cancel: function () {
 		exec(null, null, "Photos", "cancel", []);
 	},

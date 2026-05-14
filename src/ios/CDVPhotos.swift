@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import PhotosUI
 // Assuming CDVPlugin is the base class, adjust if necessary
 // import Cordova // Or the specific Cordova module
 
@@ -14,8 +15,10 @@ private enum Constants {
     static let pDate = "date"
     static let pTs = "timestamp"
     static let pType = "contentType"
+    static let pDuration = "duration"
     static let pUri = "uri"
     static let pCount = "count"
+    static let pFavorited = "favorited"
 
     static let pSize = "dimension"
     static let pQuality = "quality"
@@ -24,8 +27,12 @@ private enum Constants {
     static let pCMode = "collectionMode"
     static let pCModeRoll = "ROLL"
     static let pCModeSmart = "SMART"
+    static let pCModeShared = "SHARED"
+    static let pCModeImported = "IMPORTED"
+    static let pCModeFaces = "FACES"
     static let pCModeAlbums = "ALBUMS"
     static let pCModeMoments = "MOMENTS"
+    static let pCModeRecent = "RECENT"
 
     static let pListOffset = "offset"
     static let pListLimit = "limit"
@@ -35,7 +42,7 @@ private enum Constants {
     static let pEndDate = "endDate"
 
     static let tDataUrl = "data:image/jpeg;base64,%@"
-    static let tDateFormat = "YYYY-MM-dd'T'HH:mm:ssZZZZZ"
+    static let tDateFormat = "YYYY-MM-dd HH:mm:ss"
     static let tExtPattern = "^(.+)\\.([a-z]{3,4})$"
 
     static let defSize: Int = 120
@@ -70,6 +77,8 @@ class CDVPhotos: CDVPlugin {
     }()
 
     private lazy var extType: [String: String] = {
+        // image: handler always returns JPEG bytes, so report image/jpeg for
+        // formats web/JS clients are unlikely to decode natively (HEIC/HEIF/DNG).
         return [
             "JPG": "image/jpeg",
             "JPEG": "image/jpeg",
@@ -77,7 +86,13 @@ class CDVPhotos: CDVPlugin {
             "GIF": "image/gif",
             "TIF": "image/tiff",
             "TIFF": "image/tiff",
-            "HEIC": "image/jpeg", // HEIC can often be converted to JPEG for broader compatibility
+            "HEIC": "image/jpeg",
+            "HEIF": "image/jpeg",
+            "HEICS": "image/jpeg",
+            "HEIFS": "image/jpeg",
+            "DNG":  "image/jpeg",   // Apple ProRAW (iPhone 12 Pro+)
+            "WEBP": "image/webp",
+            "BMP":  "image/bmp",
             "MP4": "video/mp4",
             "MOV": "video/quicktime",
             "AVI": "video/x-msvideo",
@@ -85,6 +100,8 @@ class CDVPhotos: CDVPlugin {
             "MPG": "video/mpeg",
             "MPEG-4": "video/mp4",
             "M4V": "video/mp4",
+            "3GP": "video/3gpp",
+            "3G2": "video/3gpp2",
             "M4A": "audio/mp4",
             "AAC": "audio/mp4",
             "MP3": "audio/mp3",
@@ -102,6 +119,10 @@ class CDVPhotos: CDVPlugin {
             return nil
         }
     }()
+
+    // tracks the in-flight PHPickerViewController invocation so the delegate
+    // callback can resolve the right cordova command
+    private var pickerCommand: CDVInvokedUrlCommand?
 
     private var photosCommand: CDVInvokedUrlCommand?
 
@@ -252,40 +273,69 @@ class CDVPhotos: CDVPlugin {
                 self.failure(command: command, message: Constants.eCollectionMode)
                 return
             }
-            
-            var resultCollections: [PHCollection] = []
-            fetchResultCollections.enumerateObjects {(collection, _, _) in
-                // Original code adds both PHCollectionList and PHAssetCollection
-                // and then filters. We can potentially filter earlier or keep the logic.
-                // For now, let's keep it similar.
-                resultCollections.append(collection)
-            }
-            
-            let filteredAssetCollections = resultCollections.compactMap { $0 as? PHAssetCollection }.filter { $0.canContainAssets }
 
-            let result: [[String: Any]] = filteredAssetCollections.map { assetCollection in
-                let count = assetCollection.estimatedAssetCount
-                let title = assetCollection.localizedTitle ?? Constants.defName
-                
-                var collectionItem: [String: Any] = [
-                    Constants.pId: assetCollection.localIdentifier,
-                    Constants.pName: title,
+            // ALBUMS mode returns top-level user collections, which mixes PHAssetCollection
+            // (albums) and PHCollectionList (folders). Recurse into folders so albums nested
+            // inside them get listed too — otherwise they're invisible in the picker.
+            var albums: [(album: PHAssetCollection, displayName: String)] = []
+            fetchResultCollections.enumerateObjects { (collection, _, _) in
+                albums.append(contentsOf: self.collectAlbums(from: collection, parentPath: nil))
+            }
+
+            let result: [[String: Any]] = albums.map { item in
+                let count = item.album.estimatedAssetCount
+                return [
+                    Constants.pId: item.album.localIdentifier,
+                    Constants.pName: item.displayName,
                     Constants.pCount: "\(count)"
                 ]
-                return collectionItem
             }
             self.success(command: command, array: result)
         }
     }
 
+    private func collectAlbums(from collection: PHCollection, parentPath: String?) -> [(album: PHAssetCollection, displayName: String)] {
+        let title = collection.localizedTitle ?? Constants.defName
+        var result: [(album: PHAssetCollection, displayName: String)] = []
+
+        if let assetCollection = collection as? PHAssetCollection {
+            if assetCollection.canContainAssets {
+                var displayName = title
+                if let parentPath = parentPath {
+                    displayName = "\(parentPath) / \(title)"
+                }
+                result.append((album: assetCollection, displayName: displayName))
+            }
+        } else if let collectionList = collection as? PHCollectionList {
+            var newPath = title
+            if let parentPath = parentPath {
+                newPath = "\(parentPath) / \(title)"
+            }
+            let children = PHCollection.fetchCollections(in: collectionList, options: nil)
+            children.enumerateObjects { (child, _, _) in
+                result.append(contentsOf: self.collectAlbums(from: child, parentPath: newPath))
+            }
+        }
+
+        return result
+    }
+
     // MARK: - Auxiliary functions (to be implemented or moved)
     private func fetchCollections(options: [String: Any]) -> PHFetchResult<PHCollection>? {
         let mode = valueFrom(dictionary: options, byKey: Constants.pCMode, default: Constants.pCModeRoll)
-
+        
         if mode == Constants.pCModeRoll {
             return PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumUserLibrary, options: nil) as? PHFetchResult<PHCollection>
         } else if mode == Constants.pCModeSmart {
-            return PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .any, options: nil) as? PHFetchResult<PHCollection>
+            return PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumFavorites, options: nil) as? PHFetchResult<PHCollection>
+        } else if mode == Constants.pCModeRecent {
+            return PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumRecentlyAdded, options: nil) as? PHFetchResult<PHCollection>
+        } else if mode == Constants.pCModeShared {
+            return PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumCloudShared, options: nil) as? PHFetchResult<PHCollection>
+        } else if mode == Constants.pCModeImported {
+            return PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumImported, options: nil) as? PHFetchResult<PHCollection>
+        } else if mode == Constants.pCModeFaces {
+            return PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumSyncedFaces, options: nil) as? PHFetchResult<PHCollection>
         } else if mode == Constants.pCModeAlbums {
             return PHCollectionList.fetchTopLevelUserCollections(with: nil) as PHFetchResult<PHCollection>
         } else if mode == Constants.pCModeMoments {
@@ -294,7 +344,8 @@ class CDVPhotos: CDVPlugin {
             return nil
         }
     }
-
+    
+    
     private func assetByCommand(command: CDVInvokedUrlCommand) -> PHAsset? {
         guard let assetId: String = arg(of: command, at: 0, default: nil) else {
             failure(command: command, message: Constants.ePhotoIdUndef)
@@ -302,9 +353,10 @@ class CDVPhotos: CDVPlugin {
         }
 
         let fetchOptions = PHFetchOptions()
-        fetchOptions.sortDescriptors = [NSSortDescriptor(key: Constants.sSortType, ascending: false)]
+        // fetchOptions.sortDescriptors = [NSSortDescriptor(key: "modificationDate", ascending: false)]
         fetchOptions.includeAllBurstAssets = true
         fetchOptions.includeHiddenAssets = true
+        
         
         let fetchResultAssets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: fetchOptions)
         
@@ -326,11 +378,125 @@ class CDVPhotos: CDVPlugin {
         return asset
     }
 
-    private func getFilenameForAsset(asset: PHAsset) -> String? {
-        // Original Objective-C code uses [asset valueForKey:@"filename"];
-        // This is the Swift equivalent using KVC.
-        return asset.value(forKey: "filename") as? String
+    private struct AssetMeta {
+        let name: String
+        let ext: String       // lowercase, no leading dot
+        let mimeType: String
     }
+
+    // Resolve a (name, ext, mimeType) triple for a PHAsset that NEVER returns nil.
+    // The previous KVC "filename" path silently dropped any asset where the value
+    // came back nil (common for some iCloud / synced / edited assets) and any asset
+    // whose extension wasn't in extType (DNG/HEIF/etc). We now use the documented
+    // PHAssetResource API first, fall back to KVC, and as a last resort synthesise
+    // a name from the asset id + mediaType so we never lose an asset that's there.
+    private func metaForAsset(_ asset: PHAsset) -> AssetMeta {
+        let resources = PHAssetResource.assetResources(for: asset)
+        let primary = resources.first { r in
+            r.type == .photo || r.type == .video || r.type == .audio
+                || r.type == .fullSizePhoto || r.type == .fullSizeVideo
+        } ?? resources.first
+
+        var raw: String? = primary?.originalFilename
+        if raw == nil || raw!.isEmpty {
+            raw = asset.value(forKey: "filename") as? String
+        }
+
+        var name = ""
+        var ext = ""
+        if let filename = raw, !filename.isEmpty {
+            let url = URL(fileURLWithPath: filename)
+            name = url.deletingPathExtension().lastPathComponent
+            ext = url.pathExtension.lowercased()
+        }
+
+        if name.isEmpty {
+            name = asset.localIdentifier.components(separatedBy: "/").first ?? asset.localIdentifier
+        }
+
+        var mime: String? = nil
+        if !ext.isEmpty {
+            mime = self.extType[ext.uppercased()]
+        }
+        if mime == nil {
+            switch asset.mediaType {
+            case .image: mime = "image/jpeg"
+            case .video: mime = "video/mp4"
+            case .audio: mime = "audio/mp4"
+            default:     mime = "application/octet-stream"
+            }
+        }
+
+        if ext.isEmpty {
+            switch asset.mediaType {
+            case .image: ext = "jpg"
+            case .video: ext = "mp4"
+            case .audio: ext = "m4a"
+            default:     ext = "bin"
+            }
+        }
+
+        return AssetMeta(name: name, ext: ext, mimeType: mime!)
+    }
+    
+    
+    @objc(videos:)
+    func videos(command: CDVInvokedUrlCommand) {
+        if self.photosCommand != nil { // Shared with photos, as per original Obj-C
+            self.failure(command: command, message: Constants.ePhotoBusy)
+            return
+        }
+        self.photosCommand = command
+        
+        checkPermissions(of: command) { [weak self] in
+            guard let self = self else {
+                // As with photos method, consider implications if self is nil here.
+                return
+            }
+            
+            let collectionIds: [String]? = self.arg(of: command, at: 0, default: nil)
+            let options: [String: Any] = self.arg(of: command, at: 1, default: [:] as [String: Any])
+            // NSLog(@"videos: collectionIds=%@", collectionIds);
+            print("videos: collectionIds=\(collectionIds ?? [])")
+            
+            let startDateStr: String? = self.valueFrom(dictionary: options, byKey: Constants.pStartDate, default: nil)
+            let endDateStr: String? = self.valueFrom(dictionary: options, byKey: Constants.pEndDate, default: nil)
+            
+            // Create search predicate
+            var predicates: [NSPredicate] = [NSPredicate(format: "mediaType = %d", PHAssetMediaType.video.rawValue)]
+            
+            // add in start / end date
+            if let startDateStr = startDateStr, !startDateStr.isEmpty {
+                let range = dateRangeFromUserInputs(startInput:startDateStr, endInput: endDateStr!)
+                predicates.append(NSPredicate( format: "creationDate >= %@ AND creationDate < %@", range!.start as NSDate, range!.end as NSDate))
+            }
+            
+            let finalPredicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+            
+            var result: [[String: Any]]? = nil
+            
+            if collectionIds == nil || collectionIds!.isEmpty {
+                result = self.fetchAllMedia(ofType: .video, command: command, predicate: finalPredicate)
+            } else {
+                let fetchResultAssetCollections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: collectionIds!, options: nil)
+                
+                if fetchResultAssetCollections.count == 0 && !collectionIds!.isEmpty {
+                     print("Warning: No collections found for given IDs: \(collectionIds!)")
+                }
+                result = self.fetchMediaFromCollections(ofType: .video, fetchResultAssetCollections: fetchResultAssetCollections, command: command, predicate: finalPredicate)
+            }
+            
+            self.photosCommand = nil // Clear the shared command
+            if let res = result {
+                self.success(command: command, array: res)
+            } else {
+                // This case should ideally be handled by sub-methods sending a failure
+                self.failure(command: command, message: "Failed to fetch videos.")
+            }
+        }
+    }
+
+    
 
     @objc(photos:)
     func photos(command: CDVInvokedUrlCommand) {
@@ -351,38 +517,16 @@ class CDVPhotos: CDVPlugin {
             let startDateStr: String? = self.valueFrom(dictionary: options, byKey: Constants.pStartDate, default: nil)
             let endDateStr: String? = self.valueFrom(dictionary: options, byKey: Constants.pEndDate, default: nil)
             
-            // Convert date strings to Date objects if provided
-            var startDate: Date?
-            var endDate: Date?
-            
-            if let startDateStr = startDateStr {
-                startDate = self.dateFormat.date(from: startDateStr)
-            }
-            if let endDateStr = endDateStr {
-                endDate = self.dateFormat.date(from: endDateStr)
-            }
             
             // Create search predicate
             var predicates: [NSPredicate] = [NSPredicate(format: "mediaType = %d", PHAssetMediaType.image.rawValue)]
             
-            // Add search text predicate if provided
-            if let searchText = searchText, !searchText.isEmpty {
-                predicates.append(NSPredicate(format: "((mediaSubtype & %d) != 0) OR ((mediaSubtype & %d) != 0)", 
-                    PHAssetMediaSubtype.photoPanorama.rawValue,
-                    PHAssetMediaSubtype.photoHDR.rawValue))
-                
-                // Add search text to metadata
-                let searchPredicate = NSPredicate(format: "ANY keywords CONTAINS[cd] %@", searchText)
-                predicates.append(searchPredicate)
+            // add in the dates
+            if let startDateStr = startDateStr, !startDateStr.isEmpty {
+                let range = dateRangeFromUserInputs(startInput:startDateStr, endInput: endDateStr!)
+                predicates.append(NSPredicate( format: "creationDate >= %@ AND creationDate < %@", range!.start as NSDate, range!.end as NSDate))
             }
             
-            // Add date range predicate if provided
-            if let startDate = startDate {
-                predicates.append(NSPredicate(format: "creationDate >= %@", startDate as NSDate))
-            }
-            if let endDate = endDate {
-                predicates.append(NSPredicate(format: "creationDate <= %@", endDate as NSDate))
-            }
             
             // Combine all predicates
             let finalPredicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
@@ -409,6 +553,66 @@ class CDVPhotos: CDVPlugin {
         }
     }
 
+    // presents apples native PHPickerViewController (iOS 14+) so the user can search
+    // their library with apples built-in content search, faces, locations, etc., and
+    // pick one or many photos. results are returned in the same dict shape as photos:
+    // so the JS side can treat them like any other batch coming through onPhotosPageLoaded.
+    //
+    // JS shape: Photos.pickPhotos({ limit: 10, mediaType: "image" }, onSuccess, onError)
+    //   limit:     0 (default) for unlimited, or N for max selections
+    //   mediaType: "image" (default), "video", or "any"
+    @objc(pickPhotos:)
+    func pickPhotos(command: CDVInvokedUrlCommand) {
+        if #available(iOS 14, *) {
+            self.presentPHPicker(command: command)
+        } else {
+            self.failure(command: command, message: "PHPicker requires iOS 14 or newer")
+        }
+    }
+
+    func dateRangeFromUserInputs(startInput: String, endInput: String) -> (start: Date, end: Date)? {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        
+        func parseDate(_ input: String, isEndDate: Bool = false) -> Date? {
+            let cleanedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            let formats = [
+                "yyyy-MM-dd",    // exact day
+                "MM/dd/yyyy",    // exact day
+                "MMMM d, yyyy",  // exact day
+                "MMM d, yyyy",   // exact day
+                "MMMM yyyy",     // month + year
+                "MMM yyyy",      // month + year
+                "yyyy"           // year only
+            ]
+            
+            for format in formats {
+                formatter.dateFormat = format
+                if let date = formatter.date(from: cleanedInput.capitalized) {
+                    switch format {
+                    case "yyyy-MM-dd", "MM/dd/yyyy", "MMMM d, yyyy", "MMM d, yyyy":
+                        return isEndDate ? calendar.date(byAdding: .day, value: 1, to: date) : date
+                    case "MMMM yyyy", "MMM yyyy":
+                        return isEndDate ? calendar.date(byAdding: .month, value: 1, to: date) : date
+                    case "yyyy":
+                        return isEndDate ? calendar.date(byAdding: .year, value: 1, to: date) : date
+                    default:
+                        break
+                    }
+                }
+            }
+            return nil
+        }
+        
+        guard let startDate = parseDate(startInput), let endDate = parseDate(endInput, isEndDate: true) else {
+            return nil
+        }
+        
+        return (start: startDate, end: endDate)
+    }
+
     // Update fetchAllMedia to accept predicate
     private func fetchAllMedia(ofType mediaType: PHAssetMediaType, command: CDVInvokedUrlCommand, predicate: NSPredicate? = nil) -> [[String: Any]]? {
         guard let currentCommand = self.photosCommand else { return nil }
@@ -420,8 +624,12 @@ class CDVPhotos: CDVPlugin {
 
         let fetchOptions = PHFetchOptions()
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: Constants.sSortType, ascending: false)]
-        fetchOptions.includeAllBurstAssets = true
-        fetchOptions.includeHiddenAssets = true
+        //fetchOptions.sortDescriptors = [NSSortDescriptor(key: "mediaType", ascending: false)]
+        fetchOptions.includeAllBurstAssets = false
+        fetchOptions.includeHiddenAssets = false
+        
+        let allSources: PHAssetSourceType = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+        fetchOptions.includeAssetSourceTypes = allSources
         
         // Apply the search predicate if provided
         if let predicate = predicate {
@@ -430,69 +638,53 @@ class CDVPhotos: CDVPlugin {
             fetchOptions.predicate = NSPredicate(format: "mediaType = %d", mediaType.rawValue)
         }
         
-        if offset == 0 && limit > 0 {
-            fetchOptions.fetchLimit = limit
+        // cap the fetch at offset+limit so PhotoKit doesnt materialize the whole library
+        // for paged queries. previously fetchLimit was only set when offset == 0, so
+        // every subsequent page enumerated unbounded
+        if limit > 0 {
+            fetchOptions.fetchLimit = offset + limit
         }
-        
+
         let fetchResultAssets = PHAsset.fetchAssets(with: fetchOptions)
+
+
         var fetchedCount = 0
-        var skippedAssets: [PHAsset] = []
         var result: [[String: Any]] = []
 
         fetchResultAssets.enumerateObjects { [weak self] (asset, _, stop) in
             guard let self = self else { return }
-            if self.photosCommand == nil { // Check if the command was cancelled
+            if self.photosCommand == nil {
                 stop.pointee = true
                 return
             }
 
-            guard let filename = self.getFilenameForAsset(asset: asset) else {
-                skippedAssets.append(asset)
-                return
-            }
-            
-            guard let regex = self.extRegex, 
-                  let match = regex.firstMatch(in: filename, options: [], range: NSRange(location: 0, length: filename.utf16.count)) else {
-                skippedAssets.append(asset)
-                return
-            }
-
-            let nsFilename = filename as NSString
-            let name = nsFilename.substring(with: match.range(at: 1))
-            let ext = nsFilename.substring(with: match.range(at: 2)).uppercased()
-            
-            guard let type = self.extType[ext] else {
-                skippedAssets.append(asset)
-                return
-            }
-            
-            // Apply offset and limit logic
-            // The original Objective-C code applies offset *before* checking the limit condition.
-            // And increments `fetched` for every processed item, regardless of whether it matches the type.
-            // The Swift version needs to replicate this carefully.
-            
-            if fetchedCount >= offset { // Only add to result if past the offset
+            if fetchedCount >= offset {
+                // metaForAsset hits asset resources for mime/ext - dont pay this cost
+                // for assets below the offset that we'd just throw away
+                let meta = self.metaForAsset(asset)
                 var assetItem: [String: Any] = [
                     Constants.pId: asset.localIdentifier,
-                    Constants.pName: name,
-                    Constants.pType: type,
+                    Constants.pName: meta.name,
+                    Constants.pType: meta.mimeType,
                     Constants.pDate: self.dateFormat.string(from: asset.creationDate ?? Date()),
                     Constants.pTs: Int64((asset.creationDate ?? Date()).timeIntervalSince1970 * 1000),
+                    Constants.pDuration: asset.duration,
                     Constants.pWidth: asset.pixelWidth,
-                    Constants.pHeight: asset.pixelHeight
+                    Constants.pHeight: asset.pixelHeight,
+                    Constants.pFavorited: asset.isFavorite
                 ]
-                
+
                 if let location = asset.location {
                     assetItem[Constants.pLat] = location.coordinate.latitude
                     assetItem[Constants.pLon] = location.coordinate.longitude
                 }
-                
+
                 let assetIdPathless = asset.localIdentifier.components(separatedBy: "/").first ?? ""
-                let uriString = "assets-library://asset/asset.\(ext.lowercased())?id=\(assetIdPathless)&ext=\(ext.lowercased())"
+                let uriString = "assets-library://asset/asset.\(meta.ext)?id=\(assetIdPathless)&ext=\(meta.ext)"
                 assetItem[Constants.pUri] = uriString
-                
+
                 result.append(assetItem)
-                
+
                 if limit > 0 && result.count >= limit {
                     stop.pointee = true
                     return
@@ -500,11 +692,7 @@ class CDVPhotos: CDVPlugin {
             }
             fetchedCount += 1
         }
-        
-        skippedAssets.forEach { asset in
-            print("skipped asset: id=\(asset.localIdentifier); name=\(self.getFilenameForAsset(asset: asset) ?? "N/A"), type=\(asset.mediaType.rawValue)-\(asset.mediaSubtypes.rawValue); size=\(asset.pixelWidth)x\(asset.pixelHeight);")
-        }
-        
+
         return result
     }
 
@@ -518,10 +706,9 @@ class CDVPhotos: CDVPlugin {
         let limit = valueFrom(dictionary: options, byKey: Constants.pListLimit, default: "0").toInt() ?? 0
         
         var fetchedCount = 0
-        var skippedAssets: [PHAsset] = []
         var result: [[String: Any]] = []
 
-        fetchResultAssetCollections.enumerateObjects { [weak self] (assetCollection, _, stopCollections) in 
+        fetchResultAssetCollections.enumerateObjects { [weak self] (assetCollection, _, stopCollections) in
             guard let self = self else { return }
             if self.photosCommand == nil {
                 stopCollections.pointee = true
@@ -530,6 +717,11 @@ class CDVPhotos: CDVPlugin {
 
             let fetchOptions = PHFetchOptions()
             fetchOptions.sortDescriptors = [NSSortDescriptor(key: Constants.sSortType, ascending: false)]
+            fetchOptions.includeAllBurstAssets = false
+            fetchOptions.includeHiddenAssets = false
+            
+            let allSources: PHAssetSourceType = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+            fetchOptions.includeAssetSourceTypes = allSources
             
             // Apply the search predicate if provided
             if let predicate = predicate {
@@ -538,121 +730,64 @@ class CDVPhotos: CDVPlugin {
                 fetchOptions.predicate = NSPredicate(format: "mediaType = %d", mediaType.rawValue)
             }
             
-            if offset == 0 && limit > 0 {
-                fetchOptions.fetchLimit = limit
+            // cap the fetch at offset+limit so PhotoKit doesnt materialize the whole
+            // collection for paged queries. previously fetchLimit was only set when
+            // offset == 0, so every subsequent page enumerated unbounded
+            if limit > 0 {
+                fetchOptions.fetchLimit = offset + limit
             }
 
             let fetchResultAssets = PHAsset.fetchAssets(in: assetCollection, options: fetchOptions)
-            
+
             fetchResultAssets.enumerateObjects { (asset, _, stopAssets) in
-                if self.photosCommand == nil { // Check if the command was cancelled
+                if self.photosCommand == nil {
                     stopAssets.pointee = true
-                    stopCollections.pointee = true // also stop outer loop
+                    stopCollections.pointee = true
                     return
                 }
 
-                guard let filename = self.getFilenameForAsset(asset: asset) else {
-                    skippedAssets.append(asset)
-                    return
-                }
-                
-                guard let regex = self.extRegex, 
-                      let match = regex.firstMatch(in: filename, options: [], range: NSRange(location: 0, length: filename.utf16.count)) else {
-                    skippedAssets.append(asset)
-                    return
-                }
-
-                let nsFilename = filename as NSString
-                let name = nsFilename.substring(with: match.range(at: 1))
-                let ext = nsFilename.substring(with: match.range(at: 2)).uppercased()
-                
-                guard let type = self.extType[ext] else {
-                    skippedAssets.append(asset)
-                    return
-                }
-                
                 if fetchedCount >= offset {
+                    // metaForAsset hits asset resources for mime/ext - dont pay this
+                    // cost for assets below the offset that we'd just throw away
+                    let meta = self.metaForAsset(asset)
                     var assetItem: [String: Any] = [
                         Constants.pId: asset.localIdentifier,
-                        Constants.pName: name,
-                        Constants.pType: type,
+                        Constants.pName: meta.name,
+                        Constants.pType: meta.mimeType,
                         Constants.pDate: self.dateFormat.string(from: asset.creationDate ?? Date()),
                         Constants.pTs: Int64((asset.creationDate ?? Date()).timeIntervalSince1970 * 1000),
+                        Constants.pDuration: asset.duration,
                         Constants.pWidth: asset.pixelWidth,
-                        Constants.pHeight: asset.pixelHeight
+                        Constants.pHeight: asset.pixelHeight,
+                        Constants.pFavorited: asset.isFavorite
                     ]
-                    
+
                     if let location = asset.location {
                         assetItem[Constants.pLat] = location.coordinate.latitude
                         assetItem[Constants.pLon] = location.coordinate.longitude
                     }
-                    
+
                     let assetIdPathless = asset.localIdentifier.components(separatedBy: "/").first ?? ""
-                    let uriString = "assets-library://asset/asset.\(ext.lowercased())?id=\(assetIdPathless)&ext=\(ext.lowercased())"
+                    let uriString = "assets-library://asset/asset.\(meta.ext)?id=\(assetIdPathless)&ext=\(meta.ext)"
                     assetItem[Constants.pUri] = uriString
-                    
+
                     result.append(assetItem)
-                    
+
                     if limit > 0 && result.count >= limit {
                         stopAssets.pointee = true
-                        stopCollections.pointee = true // Stop outer loop as well
+                        stopCollections.pointee = true
                         return
                     }
                 }
                 fetchedCount += 1
             }
-            // If limit is applied globally (not per collection), this check is needed outside asset loop.
             if limit > 0 && result.count >= limit {
-                 stopCollections.pointee = true
-                 return
-            }
-        }
-        
-        skippedAssets.forEach { asset in
-            print("skipped asset: id=\(asset.localIdentifier); name=\(self.getFilenameForAsset(asset: asset) ?? "N/A"), type=\(asset.mediaType.rawValue)-\(asset.mediaSubtypes.rawValue); size=\(asset.pixelWidth)x\(asset.pixelHeight);")
-        }
-        return result
-    }
-
-    @objc(videos:)
-    func videos(command: CDVInvokedUrlCommand) {
-        if self.photosCommand != nil { // Shared with photos, as per original Obj-C
-            self.failure(command: command, message: Constants.ePhotoBusy)
-            return
-        }
-        self.photosCommand = command
-        
-        checkPermissions(of: command) { [weak self] in
-            guard let self = self else {
-                // As with photos method, consider implications if self is nil here.
+                stopCollections.pointee = true
                 return
             }
-            
-            let collectionIds: [String]? = self.arg(of: command, at: 0, default: nil)
-            // NSLog(@"videos: collectionIds=%@", collectionIds);
-            print("videos: collectionIds=\(collectionIds ?? [])")
-            
-            var result: [[String: Any]]? = nil
-            
-            if collectionIds == nil || collectionIds!.isEmpty {
-                result = self.fetchAllMedia(ofType: .video, command: command)
-            } else {
-                let fetchResultAssetCollections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: collectionIds!, options: nil)
-                
-                if fetchResultAssetCollections.count == 0 && !collectionIds!.isEmpty {
-                     print("Warning: No collections found for given IDs: \(collectionIds!)")
-                }
-                result = self.fetchMediaFromCollections(ofType: .video, fetchResultAssetCollections: fetchResultAssetCollections, command: command)
-            }
-            
-            self.photosCommand = nil // Clear the shared command
-            if let res = result {
-                self.success(command: command, array: res)
-            } else {
-                // This case should ideally be handled by sub-methods sending a failure
-                self.failure(command: command, message: "Failed to fetch videos.")
-            }
         }
+
+        return result
     }
 
     @objc(thumbnail:)
@@ -675,15 +810,15 @@ class CDVPhotos: CDVPlugin {
             if quality <= 0 { quality = Constants.defQuality }
             let asDataUrl = self.valueFrom(dictionary: options, byKey: Constants.pAsDataUrl, default: false)
 
-            if asset.mediaType == .image {
+            if asset.mediaType == .image || asset.mediaType == .video {
                 let reqOptions = PHImageRequestOptions()
                 reqOptions.resizeMode = .exact // PHImageRequestOptionsResizeModeExact
                 reqOptions.isNetworkAccessAllowed = true
                 reqOptions.isSynchronous = true // For direct result handling as in ObjC
                 reqOptions.deliveryMode = .highQualityFormat // PHImageRequestOptionsDeliveryModeHighQualityFormat
 
-                PHImageManager.default().requestImage(for: asset, 
-                                                      targetSize: CGSize(width: size, height: size), 
+                PHImageManager.default().requestImage(for: asset,
+                                                      targetSize: CGSize(width: size, height: size),
                                                       contentMode: .default, // PHImageContentModeDefault
                                                       options: reqOptions) { [weak self] (resultImage, info) in
                     guard let self = self else { return }
@@ -715,83 +850,6 @@ class CDVPhotos: CDVPlugin {
                         self.success(command: command, message: dataUrl)
                     } else {
                         self.success(command: command, data: data)
-                    }
-                }
-            } else if asset.mediaType == .video {
-                let videoReqOptions = PHVideoRequestOptions()
-                videoReqOptions.isNetworkAccessAllowed = true
-                videoReqOptions.version = .original // PHVideoRequestOptionsVersionOriginal
-                
-                PHImageManager.default().requestAVAsset(forVideo: asset, options: videoReqOptions) { [weak self] (avAsset, audioMix, info) in
-                    guard let self = self else { return }
-
-                    if let error = info?[PHImageErrorKey] as? Error {
-                        self.failure(command: command, message: error.localizedDescription)
-                        return
-                    }
-                    guard let avAsset = avAsset else {
-                        self.failure(command: command, message: "Could not load video asset")
-                        return
-                    }
-                    
-                    var targetWidth = CGFloat(size)
-                    var targetHeight = CGFloat(size)
-                    let videoTrack = avAsset.tracks(withMediaType: .video).first
-                    
-                    if let track = videoTrack {
-                        let naturalSize = track.naturalSize.applying(track.preferredTransform)
-                        let videoWidth = abs(naturalSize.width) // abs for orientation
-                        let videoHeight = abs(naturalSize.height)
-                        if videoWidth > 0 && videoHeight > 0 {
-                            let aspectRatio = videoWidth / videoHeight
-                            if videoWidth > videoHeight { // Landscape
-                                targetHeight = CGFloat(size) / aspectRatio
-                            } else { // Portrait or Square
-                                targetWidth = CGFloat(size) * aspectRatio
-                            }
-                        }
-                    } else {
-                        // Fallback if track info is not available, use asset pixel dimensions
-                        let videoWidth = CGFloat(asset.pixelWidth)
-                        let videoHeight = CGFloat(asset.pixelHeight)
-                         if videoWidth > 0 && videoHeight > 0 {
-                            let aspectRatio = videoWidth / videoHeight
-                            if videoWidth > videoHeight {
-                                targetHeight = CGFloat(size) / aspectRatio
-                            } else {
-                                targetWidth = CGFloat(size) * aspectRatio
-                            }
-                        }
-                    }
-
-                    let generator = AVAssetImageGenerator(asset: avAsset)
-                    generator.appliesPreferredTrackTransform = true
-                    generator.maximumSize = CGSize(width: targetWidth, height: targetHeight)
-                    
-                    do {
-                        let cgImage = try generator.copyCGImage(at: CMTime(value: 0, timescale: 1), actualTime: nil)
-                        let image = UIImage(cgImage: cgImage)
-                        
-                        // Draw to context to ensure size and no rotation issues from generator
-                        UIGraphicsBeginImageContext(CGSize(width: targetWidth, height: targetHeight))
-                        image.draw(in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-                        let thumbnail = UIGraphicsGetImageFromCurrentImageContext()
-                        UIGraphicsEndImageContext()
-                        
-                        guard let finalThumbnail = thumbnail, let data = finalThumbnail.jpegData(compressionQuality: CGFloat(quality) / 100.0) else {
-                            self.failure(command: command, message: Constants.ePhotoThumb)
-                            return
-                        }
-                        
-                        if asDataUrl {
-                            let dataUrl = String(format: Constants.tDataUrl, data.base64EncodedString())
-                            self.success(command: command, message: dataUrl)
-                        } else {
-                            self.success(command: command, data: data)
-                        }
-                    } catch let error {
-                        self.failure(command: command, message: error.localizedDescription)
-                        return
                     }
                 }
             } else {
@@ -836,28 +894,52 @@ class CDVPhotos: CDVPlugin {
                     return
                 }
                 
-                guard let image = UIImage(data: data) else {
-                    self.failure(command: command, message: "Could not create UIImage from data.")
+                guard let cgImage = UIImage(data: data)?.cgImage else {
+                    self.failure(command: command, message: "Could not create CGImage from data.")
                     return
                 }
-                
-                // The UIImage(data: data) should handle orientation correctly by default.
-                // The rotateUIImage method from ObjC might be redundant if UIImage applies EXIF correctly.
-                // However, for parity, let's include a similar rotation if necessary.
-                // CGImagePropertyOrientation is 1-indexed, UIImage.Orientation is 0-indexed from iOS 13
-                // For simplicity, we let UIImage handle orientation from data.
-                // If specific rotation matching the old method is needed, it has to be carefully mapped.
-                // The original `rotateUIImage` only transforms for Left, Right, Down. Up and mirrored are returned as is.
-                // Modern UIImage init from data usually handles this.
-                // Let's assume UIImage(data:data) correctly orientates. If not, the rotateUIImage function would be needed.
 
-                // The original code always converts to JPEG. UIImage.jpegData is the way.
-                guard let mediaData = image.jpegData(compressionQuality: 1.0) else {
-                     self.failure(command: command, message: "Could not get JPEG representation of image.")
-                     return
+                // Convert CGImagePropertyOrientation to UIImage.Orientation
+                let uiOrientation = self.convertOrientation(orientation)
+                let image = UIImage(cgImage: cgImage, scale: 1.0, orientation: uiOrientation)
+
+                // Now normalize and convert to sRGB in one step
+                guard let finalImage = self.normalizeAndConvertToSRGB(image) else {
+                    self.failure(command: command, message: "Could not convert colorspace")
+                    return
+                }
+
+                guard let mediaData = finalImage.jpegData(compressionQuality: 0.8) else {
+                    self.failure(command: command, message: "Could not get JPEG representation of image.")
+                    return
                 }
                 self.success(command: command, data: mediaData)
             }
+        }
+    }
+
+    func normalizeAndConvertToSRGB(_ image: UIImage) -> UIImage? {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        format.preferredRange = .standard  // sRGB
+
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+    }
+
+    func convertOrientation(_ cgOrientation: CGImagePropertyOrientation) -> UIImage.Orientation {
+        switch cgOrientation {
+        case .up: return .up
+        case .upMirrored: return .upMirrored
+        case .down: return .down
+        case .downMirrored: return .downMirrored
+        case .left: return .left
+        case .leftMirrored: return .leftMirrored
+        case .right: return .right
+        case .rightMirrored: return .rightMirrored
         }
     }
 
@@ -873,6 +955,36 @@ class CDVPhotos: CDVPlugin {
         return sourceImage // Placeholder
     }
     */
+    
+    func convertImageToSRGB(_ image: UIImage) -> UIImage? {
+        guard let cgImage = image.cgImage else { return nil }
+        
+        // Create image rectangle with current image width/height
+        let imageRect = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
+        
+        // sRGB color space
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        
+        // Create bitmap context with current image size and sRGB colorspace
+        guard let context = CGContext(
+            data: nil,
+            width: Int(imageRect.size.width),
+            height: Int(imageRect.size.height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: cgImage.bitmapInfo.rawValue
+        ) else { return nil }
+        
+        // Draw image into current context
+        context.draw(cgImage, in: imageRect)
+        
+        // Create bitmap image from context
+        guard let newCGImage = context.makeImage() else { return nil }
+        
+        // Return the new sRGB image
+        return UIImage(cgImage: newCGImage)
+    }
 
     @objc(video:)
     func video(command: CDVInvokedUrlCommand) {
@@ -892,7 +1004,7 @@ class CDVPhotos: CDVPlugin {
             // Setting isNetworkAccessAllowed to true allows Photos to download the video from iCloud if it is not on the local device.
             let options = PHVideoRequestOptions()
             options.isNetworkAccessAllowed = true
-            options.version = .original // Get original video
+            options.version = .current // Get original video
 
             options.progressHandler = { [weak self] progress, error, stop, info in
                 guard let self = self else { return }
@@ -911,9 +1023,7 @@ class CDVPhotos: CDVPlugin {
                 self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
             }
 
-            PHImageManager.default().requestExportSession(forVideo: asset, 
-                                                          options: options, 
-                                                          exportPreset: AVAssetExportPresetHighestQuality) { [weak self] (exportSession, info) in
+            PHImageManager.default().requestExportSession(forVideo: asset, options: options, exportPreset: AVAssetExportPresetPassthrough) { [weak self] (exportSession, info) in
                 guard let self = self else { return }
 
                 if let error = info?[PHImageErrorKey] as? Error { // Check for specific PHImageErrorKey
@@ -954,11 +1064,12 @@ class CDVPhotos: CDVPlugin {
                 session.exportAsynchronously { [weak self] in
                     guard let self = self else { return }
                     switch session.status {
+                    case .exporting:
+                        let result = ["type":"export_progress","uri": session.progress.description]
+                        self.success(command: command, json: result)
                     case .completed:
-							let result = ["type":"download_complete","uri": outputFilePath.absoluteString]
-                            self.success(command: command, json: result)
-                        // Clean up temporary file
-                        try? fileManager.removeItem(at: outputFilePath)
+                        let result = ["type":"download_complete","uri": outputFilePath.absoluteString]
+                        self.success(command: command, json: result)
                     case .failed:
                         let errorMessage = session.error?.localizedDescription ?? "Video export failed with unknown error"
                         self.failure(command: command, message: "Video export failed: \(errorMessage)")
@@ -976,7 +1087,7 @@ class CDVPhotos: CDVPlugin {
     func cancel(command: CDVInvokedUrlCommand) {
         // The photosCommand is shared by photos and videos fetching operations.
         // Setting it to nil should signal those operations to stop if they are checking it.
-        self.photosCommand = nil 
+        self.photosCommand = nil
         self.success(command: command) // Send OK for cancellation itself
     }
 }
@@ -985,4 +1096,97 @@ extension String {
     func toInt() -> Int? {
         return Int(self)
     }
-} 
+}
+
+@available(iOS 14, *)
+extension CDVPhotos: PHPickerViewControllerDelegate {
+    func presentPHPicker(command: CDVInvokedUrlCommand) {
+        if self.pickerCommand != nil {
+            self.failure(command: command, message: "Picker is already presented")
+            return
+        }
+
+        let options: [String: Any] = self.arg(of: command, at: 0, default: [:] as [String: Any])
+
+        // cordova's JS->native bridge can hand back a JS number as NSNumber, Double, or
+        // even a String depending on platform/version. as? Int alone is unreliable - try
+        // each shape before falling back to unlimited.
+        var limit = 0
+        if let raw = options[Constants.pListLimit] {
+            if let intVal = raw as? Int { limit = intVal }
+            else if let nsNum = raw as? NSNumber { limit = nsNum.intValue }
+            else if let dblVal = raw as? Double { limit = Int(dblVal) }
+            else if let strVal = raw as? String, let parsed = Int(strVal) { limit = parsed }
+        }
+        let mediaType = ((options["mediaType"] as? String) ?? "image").lowercased()
+        print("pickPhotos: selectionLimit=\(limit), mediaType=\(mediaType)")
+
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.selectionLimit = limit   // 0 == unlimited
+        switch mediaType {
+            case "video": config.filter = .videos
+            case "any":   config.filter = nil
+            default:      config.filter = .images
+        }
+        if #available(iOS 15, *) {
+            // preserve the order in which the user tapped photos
+            config.selection = .ordered
+        }
+
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        self.pickerCommand = command
+
+        DispatchQueue.main.async {
+            self.viewController?.present(picker, animated: true)
+        }
+    }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard let command = self.pickerCommand else { return }
+        self.pickerCommand = nil
+
+        let identifiers = results.compactMap { $0.assetIdentifier }
+        if identifiers.isEmpty {
+            // user cancelled, or system withheld asset identifiers (limited library
+            // access). either way return an empty array so JS resolves cleanly.
+            self.success(command: command, array: [])
+            return
+        }
+
+        // build dicts keyed by localIdentifier so we can preserve user pick order
+        // when assembling the final array (fetchAssets doesnt guarantee input order)
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var byId: [String: [String: Any]] = [:]
+        fetchResult.enumerateObjects { (asset, _, _) in
+            let meta = self.metaForAsset(asset)
+            var assetItem: [String: Any] = [
+                Constants.pId: asset.localIdentifier,
+                Constants.pName: meta.name,
+                Constants.pType: meta.mimeType,
+                Constants.pDate: self.dateFormat.string(from: asset.creationDate ?? Date()),
+                Constants.pTs: Int64((asset.creationDate ?? Date()).timeIntervalSince1970 * 1000),
+                Constants.pDuration: asset.duration,
+                Constants.pWidth: asset.pixelWidth,
+                Constants.pHeight: asset.pixelHeight,
+                Constants.pFavorited: asset.isFavorite
+            ]
+            if let location = asset.location {
+                assetItem[Constants.pLat] = location.coordinate.latitude
+                assetItem[Constants.pLon] = location.coordinate.longitude
+            }
+            let assetIdPathless = asset.localIdentifier.components(separatedBy: "/").first ?? ""
+            let uriString = "assets-library://asset/asset.\(meta.ext)?id=\(assetIdPathless)&ext=\(meta.ext)"
+            assetItem[Constants.pUri] = uriString
+            byId[asset.localIdentifier] = assetItem
+        }
+
+        var result: [[String: Any]] = []
+        for identifier in identifiers {
+            if let item = byId[identifier] { result.append(item) }
+        }
+
+        self.success(command: command, array: result)
+    }
+}

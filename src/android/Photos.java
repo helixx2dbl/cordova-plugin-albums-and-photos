@@ -6,7 +6,6 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.net.Uri;
-import android.os.Build;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.util.Log;
@@ -20,8 +19,6 @@ import org.json.JSONObject;
 import static android.provider.MediaStore.Images.Media.*;
 import static android.provider.MediaStore.Images.Thumbnails.MINI_KIND;
 import static android.provider.MediaStore.Images.Thumbnails.getThumbnail;
-import static android.provider.MediaStore.Video.Thumbnails.MINI_KIND;
-import static android.provider.MediaStore.Video.Thumbnails.getThumbnail;
 
 import java.io.ByteArrayOutputStream;
 import java.text.SimpleDateFormat;
@@ -38,10 +35,8 @@ import java.io.FileOutputStream;
 /**
  * Useful links:
  * <ul>
- * <li><a href=
- * 'https://developer.android.com/reference/android/provider/MediaStore.Images.Media.html'>MediaStore.Images.Media</a></li>
- * <li><a href=
- * 'https://developer.android.com/reference/android/provider/MediaStore.Images.Thumbnails.html'>MediaStore.Images.Thumbnails</a></li>
+ * <li><a href='https://developer.android.com/reference/android/provider/MediaStore.Images.Media.html'>MediaStore.Images.Media</a></li>
+ * <li><a href='https://developer.android.com/reference/android/provider/MediaStore.Images.Thumbnails.html'>MediaStore.Images.Thumbnails</a></li>
  * </ul>
  */
 public class Photos extends CordovaPlugin {
@@ -58,7 +53,7 @@ public class Photos extends CordovaPlugin {
 	private static final String P_DATE = "date";
 	private static final String P_TS = "timestamp";
 	private static final String P_TYPE = "contentType";
-	private static final String P_COUNT = "count";
+        private static final String P_COUNT = "count";
 
 	private static final String P_SIZE = "dimension";
 	private static final String P_QUALITY = "quality";
@@ -97,11 +92,12 @@ public class Photos extends CordovaPlugin {
 	private static final SimpleDateFormat DF = new SimpleDateFormat(T_DATE_FORMAT, Locale.getDefault());
 
 	@SuppressWarnings("MismatchedReadAndWriteOfArray")
-	private static final String[] PRJ_COLLECTIONS = new String[] { BUCKET_ID, BUCKET_DISPLAY_NAME, SIZE };
+	private static final String[] PRJ_COLLECTIONS =
+			new String[]{BUCKET_ID, BUCKET_DISPLAY_NAME, SIZE};
 
 	@SuppressWarnings("MismatchedReadAndWriteOfArray")
-	private static final String[] PRJ_PHOTOS = new String[] { _ID, TITLE, DATE_TAKEN, LATITUDE, LONGITUDE, WIDTH,
-			HEIGHT, ORIENTATION };
+	private static final String[] PRJ_PHOTOS =
+			new String[]{_ID, TITLE, DATE_TAKEN, LATITUDE, LONGITUDE, WIDTH, HEIGHT, ORIENTATION};
 
 	private String action;
 	private JSONArray data;
@@ -176,53 +172,24 @@ public class Photos extends CordovaPlugin {
 	}
 
 	private boolean checkPermission(String action, JSONArray data, final CallbackContext callbackContext) {
-		// For API 32 and below, use READ_EXTERNAL_STORAGE
-		// For API 33 and above, use READ_MEDIA_IMAGES and READ_MEDIA_VIDEO
-		if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
-			// API 32 and below
-			if (!PermissionHelper.hasPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)) {
-				this.action = action;
-				this.data = data;
-				this.permissionCallbackContext = callbackContext;
-				PermissionHelper.requestPermission(this, 0, Manifest.permission.READ_EXTERNAL_STORAGE);
-				return false;
-			}
-		} else {
-			// API 33 and above
-			boolean hasImagePermission = PermissionHelper.hasPermission(this, Manifest.permission.READ_MEDIA_IMAGES);
-			boolean hasVideoPermission = PermissionHelper.hasPermission(this, Manifest.permission.READ_MEDIA_VIDEO);
-
-			if (!hasImagePermission || !hasVideoPermission) {
-				this.action = action;
-				this.data = data;
-				this.permissionCallbackContext = callbackContext;
-
-				List<String> permissionsToRequest = new ArrayList<>();
-				if (!hasImagePermission) {
-					permissionsToRequest.add(Manifest.permission.READ_MEDIA_IMAGES);
-				}
-				if (!hasVideoPermission) {
-					permissionsToRequest.add(Manifest.permission.READ_MEDIA_VIDEO);
-				}
-
-				PermissionHelper.requestPermissions(this, 0, permissionsToRequest.toArray(new String[0]));
-				return false;
-			}
+		if (!PermissionHelper.hasPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)) {
+			this.action = action;
+			this.data = data;
+			this.permissionCallbackContext = callbackContext;
+			PermissionHelper.requestPermission(this, 0, Manifest.permission.READ_EXTERNAL_STORAGE);
+			return false;
 		}
 		return true;
 	}
 
 	@Override
-	public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults)
-			throws JSONException {
-		// Check if all requested permissions were granted
+	public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
 		for (int grantResult : grantResults) {
 			if (grantResult == PackageManager.PERMISSION_DENIED) {
 				this.permissionCallbackContext.error(E_PERMISSION);
 				return;
 			}
 		}
-		// All permissions granted, execute the original action
 		execute(action, data, permissionCallbackContext);
 	}
 
@@ -232,7 +199,7 @@ public class Photos extends CordovaPlugin {
 		switch (options != null ? options.optString(P_C_MODE, P_C_MODE_ROLL) : P_C_MODE_ROLL) {
 			case P_C_MODE_ROLL:
 				selection = BUCKET_DISPLAY_NAME + "=?";
-				selectionArgs = new String[] { BN_CAMERA };
+				selectionArgs = new String[]{BN_CAMERA};
 				break;
 			case P_C_MODE_SMART:
 			case P_C_MODE_ALBUMS:
@@ -257,20 +224,20 @@ public class Photos extends CordovaPlugin {
 					final JSONObject item = new JSONObject();
 					item.put(P_ID, cursor.getString(cursor.getColumnIndex(BUCKET_ID)));
 					item.put(P_NAME, cursor.getString(cursor.getColumnIndex(BUCKET_DISPLAY_NAME)));
-					item.put(P_COUNT, "1");
+                    item.put(P_COUNT, "1");
 
-					JSONObject element = null;
-					for (int i = 0; i < result.length(); i++) {
-						if (result.getJSONObject(i).getString(P_ID).equalsIgnoreCase(item.getString(P_ID))) {
-							element = result.getJSONObject(i);
-							break;
-						}
-					}
-					if (element == null) {
-						result.put(item);
-					} else {
-						element.put(P_COUNT, Integer.parseInt(element.getString(P_COUNT)) + 1);
-					}
+                    JSONObject element = null;
+                    for (int i = 0; i < result.length(); i++) {
+                        if (result.getJSONObject(i).getString(P_ID).equalsIgnoreCase(item.getString(P_ID))){
+                            element = result.getJSONObject(i);
+                            break;
+                        }
+                    }
+                    if (element == null) {
+					    result.put(item);
+                    } else {
+                        element.put(P_COUNT, Integer.parseInt(element.getString(P_COUNT)) + 1);
+                    }
 				} while (cursor.moveToNext());
 			}
 			callbackContext.success(result);
@@ -280,8 +247,7 @@ public class Photos extends CordovaPlugin {
 		}
 	}
 
-	private void photos(final JSONArray collectionIds, final JSONObject options,
-			final CallbackContext callbackContext) {
+	private void photos(final JSONArray collectionIds, final JSONObject options, final CallbackContext callbackContext) {
 		if (getPhotosCallbackContext() != null) {
 			callbackContext.error(E_PHOTO_BUSY);
 			return;
@@ -313,8 +279,7 @@ public class Photos extends CordovaPlugin {
 			JSONArray result = new JSONArray();
 			if (cursor.moveToFirst()) {
 				do {
-					if (getPhotosCallbackContext() == null)
-						break;
+					if (getPhotosCallbackContext() == null) break;
 					if (offset <= fetched) {
 						final JSONObject item = new JSONObject();
 						item.put(P_ID, cursor.getString(cursor.getColumnIndex(_ID)));
@@ -326,16 +291,17 @@ public class Photos extends CordovaPlugin {
 							item.put(P_DATE, DF.format(new Date(ts)));
 						}
 						String orientation = cursor.getString(cursor.getColumnIndex(ORIENTATION));
-						item.put(P_ORI, orientation == null ? "0" : orientation);
+						item.put(P_ORI, orientation==null?"0":orientation);
 
-						if (orientation != null && (orientation.equals("90") || orientation.equals("270"))) {
+						if (orientation!= null && (orientation.equals("90") || orientation.equals("270"))){
 							item.put(P_WIDTH, cursor.getInt(cursor.getColumnIndex(HEIGHT)));
 							item.put(P_HEIGHT, cursor.getInt(cursor.getColumnIndex(WIDTH)));
-						} else {
+						}
+						else{
 							item.put(P_WIDTH, cursor.getInt(cursor.getColumnIndex(WIDTH)));
 							item.put(P_HEIGHT, cursor.getInt(cursor.getColumnIndex(HEIGHT)));
 						}
-
+						
 						double latitude = cursor.getDouble(cursor.getColumnIndex(LATITUDE));
 						double longitude = cursor.getDouble(cursor.getColumnIndex(LONGITUDE));
 						if (latitude != 0 || longitude != 0) {
@@ -368,51 +334,35 @@ public class Photos extends CordovaPlugin {
 		int size = options != null ? options.optInt(P_SIZE, DEF_SIZE) : DEF_SIZE;
 		int quality = options != null ? options.optInt(P_QUALITY, DEF_QUALITY) : DEF_QUALITY;
 		boolean asDataUrl = options != null && options.optBoolean(P_AS_DATAURL);
-		String mediaType = options != null ? options.optString("mediaType", "image") : "image";
 
 		if (size >= 2000) {
 			this.imageGreat(photoId, options, callbackContext);
-			return;
+			return ;
 		}
 		try {
 			if (photoId == null || photoId.isEmpty() || "null".equalsIgnoreCase(photoId))
 				throw new IllegalArgumentException(E_PHOTO_ID_UNDEF);
+			final Bitmap thumb = getThumbnail(
+					cordova.getActivity().getContentResolver(), Long.parseLong(photoId), MINI_KIND, null);
+			if (thumb == null) throw new IllegalStateException(E_PHOTO_ID_WRONG);
 
-			Bitmap thumb = null;
-
-			// Use appropriate thumbnail method based on media type
-			if ("video".equalsIgnoreCase(mediaType)) {
-				thumb = getVideoThumbnail(cordova.getActivity().getContentResolver(), photoId);
-			} else {
-				// Default to image thumbnail
-				thumb = getImageThumbnail(cordova.getActivity().getContentResolver(), photoId);
-			}
-
-			if (thumb == null)
-				throw new IllegalStateException(E_PHOTO_ID_WRONG);
-
-			double ratio = (double) size
-					/ (thumb.getWidth() >= thumb.getHeight() ? thumb.getWidth() : thumb.getHeight());
+			double ratio = (double) size / (thumb.getWidth() >= thumb.getHeight() ? thumb.getWidth() : thumb.getHeight());
 			int thumbW = (int) Math.round(thumb.getWidth() * ratio);
 			int thumbH = (int) Math.round(thumb.getHeight() * ratio);
 
 			final ByteArrayOutputStream osThumb = new ByteArrayOutputStream();
 
-			int orientation = options != null && options.has(P_ORI) ? options.optInt(P_ORI, DEF_ORI)
-					: getRotationFromMediaStore(cordova.getActivity().getContentResolver(), photoId, mediaType);
+			int orientation = options != null && options.has(P_ORI) ? options.optInt(P_ORI, DEF_ORI) : getRotationFromMediaStore(cordova.getActivity().getContentResolver(), photoId);
 
 			Matrix matrix = new Matrix();
 			matrix.postRotate(orientation);
 			Bitmap scaledBitmap = Bitmap.createScaledBitmap(thumb, thumbW, thumbH, true);
-			Bitmap rotatedBitmap = Bitmap.createBitmap(scaledBitmap, 0, 0, scaledBitmap.getWidth(),
-					scaledBitmap.getHeight(), matrix, true);
+			Bitmap rotatedBitmap = Bitmap.createBitmap(scaledBitmap, 0, 0, scaledBitmap.getWidth(), scaledBitmap.getHeight(), matrix, true);
 
 			rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, osThumb);
 
-			if (!asDataUrl)
-				callbackContext.success(osThumb.toByteArray());
-			else
-				callbackContext.success(T_DATA_URL + Base64.encodeToString(osThumb.toByteArray(), Base64.NO_WRAP));
+			if (!asDataUrl) callbackContext.success(osThumb.toByteArray());
+			else callbackContext.success(T_DATA_URL + Base64.encodeToString(osThumb.toByteArray(), Base64.NO_WRAP));
 		} catch (Exception e) {
 			Log.e(TAG, e.getMessage(), e);
 			callbackContext.error(e.getMessage());
@@ -420,77 +370,46 @@ public class Photos extends CordovaPlugin {
 	}
 
 	public static int getRotationFromMediaStore(ContentResolver resolver, String photoId) {
-		return getRotationFromMediaStore(resolver, photoId, "image");
-	}
-
-	public static int getRotationFromMediaStore(ContentResolver resolver, String photoId, String mediaType) {
-		Uri mediaUri;
-		String[] columns;
-
-		if ("video".equalsIgnoreCase(mediaType)) {
-			mediaUri = Uri.withAppendedPath(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, photoId);
-			columns = new String[] { MediaStore.Video.Media.DATA, MediaStore.Video.Media.ORIENTATION };
-		} else {
-			mediaUri = Uri.withAppendedPath(EXTERNAL_CONTENT_URI, photoId);
-			columns = new String[] { MediaStore.Images.Media.DATA, MediaStore.Images.Media.ORIENTATION };
-		}
-
-		Cursor cursor = resolver.query(mediaUri, columns, null, null, null);
-		if (cursor == null)
-			return 0;
+		Uri imageUri = Uri.withAppendedPath(EXTERNAL_CONTENT_URI, photoId);
+		String[] columns = {MediaStore.Images.Media.DATA, MediaStore.Images.Media.ORIENTATION};
+		Cursor cursor = resolver.query(imageUri, columns, null, null, null);
+		if (cursor == null) return 0;
 
 		cursor.moveToFirst();
 
 		int orientationColumnIndex = cursor.getColumnIndex(columns[1]);
-		int orientation = cursor.getInt(orientationColumnIndex);
-		cursor.close();
-		return orientation;
+		return cursor.getInt(orientationColumnIndex);
 	}
 
 	private void imageGreat(final String photoId, final JSONObject options, final CallbackContext callbackContext) {
 		int size = options != null ? options.optInt(P_SIZE, DEF_SIZE) : DEF_SIZE;
 		int quality = options != null ? options.optInt(P_QUALITY, DEF_QUALITY) : DEF_QUALITY;
 		boolean asDataUrl = options != null && options.optBoolean(P_AS_DATAURL);
-		String mediaType = options != null ? options.optString("mediaType", "image") : "image";
 
 		try {
 			if (photoId == null || photoId.isEmpty() || "null".equalsIgnoreCase(photoId))
 				throw new IllegalArgumentException(E_PHOTO_ID_UNDEF);
-
-			Uri mediaUri;
-			if ("video".equalsIgnoreCase(mediaType)) {
-				mediaUri = Uri.withAppendedPath(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, photoId);
-			} else {
-				mediaUri = Uri.withAppendedPath(EXTERNAL_CONTENT_URI, photoId);
-			}
-
 			final Bitmap image = getBitmap(
 					cordova.getActivity().getContentResolver(),
-					mediaUri);
-			if (image == null)
-				throw new IllegalStateException(E_PHOTO_ID_WRONG);
+					Uri.withAppendedPath(EXTERNAL_CONTENT_URI, photoId));
+			if (image == null) throw new IllegalStateException(E_PHOTO_ID_WRONG);
 			final ByteArrayOutputStream osImage = new ByteArrayOutputStream();
 
-			double ratio = (double) size
-					/ (image.getWidth() >= image.getHeight() ? image.getWidth() : image.getHeight());
+			double ratio = (double) size / (image.getWidth() >= image.getHeight() ? image.getWidth() : image.getHeight());
 			int thumbW = (int) Math.round(image.getWidth() * ratio);
 			int thumbH = (int) Math.round(image.getHeight() * ratio);
 
-			int orientation = options != null && options.has(P_ORI) ? options.optInt(P_ORI, DEF_ORI)
-					: getRotationFromMediaStore(cordova.getActivity().getContentResolver(), photoId, mediaType);
+			int orientation = options != null && options.has(P_ORI) ? options.optInt(P_ORI, DEF_ORI) : getRotationFromMediaStore(cordova.getActivity().getContentResolver(), photoId);
 
 			Matrix matrix = new Matrix();
 			matrix.postRotate(orientation);
 			Bitmap scaledBitmap = Bitmap.createScaledBitmap(image, thumbW, thumbH, true);
-			Bitmap rotatedBitmap = Bitmap.createBitmap(scaledBitmap, 0, 0, scaledBitmap.getWidth(),
-					scaledBitmap.getHeight(), matrix, true);
+			Bitmap rotatedBitmap = Bitmap.createBitmap(scaledBitmap, 0, 0, scaledBitmap.getWidth(), scaledBitmap.getHeight(), matrix, true);
 
 			rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, osImage);
 
-			if (!asDataUrl)
-				callbackContext.success(osImage.toByteArray());
-			else
-				callbackContext.success(T_DATA_URL + Base64.encodeToString(osImage.toByteArray(), Base64.NO_WRAP));
+			if (!asDataUrl) callbackContext.success(osImage.toByteArray());
+			else callbackContext.success(T_DATA_URL + Base64.encodeToString(osImage.toByteArray(), Base64.NO_WRAP));
 
 			callbackContext.success(osImage.toByteArray());
 		} catch (Exception e) {
@@ -512,8 +431,7 @@ public class Photos extends CordovaPlugin {
 			final Bitmap image = getBitmap(
 					cordova.getActivity().getContentResolver(),
 					Uri.withAppendedPath(EXTERNAL_CONTENT_URI, photoId));
-			if (image == null)
-				throw new IllegalStateException(E_PHOTO_ID_WRONG);
+			if (image == null) throw new IllegalStateException(E_PHOTO_ID_WRONG);
 			final ByteArrayOutputStream osImage = new ByteArrayOutputStream();
 
 			Matrix matrix = new Matrix();
@@ -530,8 +448,7 @@ public class Photos extends CordovaPlugin {
 		}
 	}
 
-	private void videos(final JSONArray collectionIds, final JSONObject options,
-			final CallbackContext callbackContext) {
+	private void videos(final JSONArray collectionIds, final JSONObject options, final CallbackContext callbackContext) {
 		if (getPhotosCallbackContext() != null) {
 			callbackContext.error(E_PHOTO_BUSY);
 			return;
@@ -555,10 +472,10 @@ public class Photos extends CordovaPlugin {
 		try (final Cursor cursor = query(
 				cordova.getActivity().getContentResolver(),
 				MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-				new String[] { MediaStore.Video.Media._ID, MediaStore.Video.Media.TITLE,
-						MediaStore.Video.Media.DATE_TAKEN, MediaStore.Video.Media.LATITUDE,
-						MediaStore.Video.Media.LONGITUDE, MediaStore.Video.Media.WIDTH,
-						MediaStore.Video.Media.HEIGHT, MediaStore.Video.Media.DURATION },
+				new String[]{MediaStore.Video.Media._ID, MediaStore.Video.Media.TITLE, 
+					MediaStore.Video.Media.DATE_TAKEN, MediaStore.Video.Media.LATITUDE, 
+					MediaStore.Video.Media.LONGITUDE, MediaStore.Video.Media.WIDTH, 
+					MediaStore.Video.Media.HEIGHT, MediaStore.Video.Media.DURATION},
 				selection,
 				selectionArgs,
 				MediaStore.Video.Media.DATE_TAKEN + " DESC")) {
@@ -566,8 +483,7 @@ public class Photos extends CordovaPlugin {
 			JSONArray result = new JSONArray();
 			if (cursor.moveToFirst()) {
 				do {
-					if (getPhotosCallbackContext() == null)
-						break;
+					if (getPhotosCallbackContext() == null) break;
 					if (offset <= fetched) {
 						final JSONObject item = new JSONObject();
 						item.put(P_ID, cursor.getString(cursor.getColumnIndex(MediaStore.Video.Media._ID)));
@@ -578,10 +494,10 @@ public class Photos extends CordovaPlugin {
 							item.put(P_TS, ts);
 							item.put(P_DATE, DF.format(new Date(ts)));
 						}
-
+						
 						item.put(P_WIDTH, cursor.getInt(cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)));
 						item.put(P_HEIGHT, cursor.getInt(cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)));
-
+						
 						double latitude = cursor.getDouble(cursor.getColumnIndex(MediaStore.Video.Media.LATITUDE));
 						double longitude = cursor.getDouble(cursor.getColumnIndex(MediaStore.Video.Media.LONGITUDE));
 						if (latitude != 0 || longitude != 0) {
@@ -625,7 +541,7 @@ public class Photos extends CordovaPlugin {
 			ContentResolver resolver = cordova.getActivity().getContentResolver();
 
 			// Get video file path
-			String[] projection = { MediaStore.Video.Media.DATA };
+			String[] projection = {MediaStore.Video.Media.DATA};
 			Cursor cursor = resolver.query(videoUri, projection, null, null, null);
 			if (cursor == null || !cursor.moveToFirst()) {
 				throw new IllegalStateException(E_PHOTO_ID_WRONG);
@@ -678,8 +594,7 @@ public class Photos extends CordovaPlugin {
 	}
 
 	private String repeatText(int count, String text, String separator) {
-		if (count <= 0 || text == null || text.isEmpty())
-			return "";
+		if (count <= 0 || text == null || text.isEmpty()) return "";
 		final StringBuilder result = new StringBuilder();
 		for (int i = 0; i < count; ++i) {
 			if (i > 0 && separator != null && !separator.isEmpty())
@@ -691,8 +606,7 @@ public class Photos extends CordovaPlugin {
 
 	@SuppressWarnings("unchecked")
 	private <T> List<T> jsonArrayToList(JSONArray array) {
-		if (array == null)
-			return null;
+		if (array == null) return null;
 		final List<T> result = new ArrayList<>();
 		for (int i = 0; i < array.length(); ++i)
 			result.add((T) array.opt(i));
@@ -705,40 +619,5 @@ public class Photos extends CordovaPlugin {
 
 	private void requestPhotoLibraryAuthorization(final CallbackContext callbackContext) {
 		callbackContext.success();
-	}
-
-	private Bitmap getVideoThumbnail(ContentResolver resolver, String videoId) {
-		try {
-			return android.provider.MediaStore.Video.Thumbnails.getThumbnail(
-					resolver,
-					Long.parseLong(videoId),
-					android.provider.MediaStore.Video.Thumbnails.MINI_KIND,
-					null);
-		} catch (Exception e) {
-			Log.e(TAG, "Error getting video thumbnail: " + e.getMessage(), e);
-			return null;
-		}
-	}
-
-	private Bitmap getImageThumbnail(ContentResolver resolver, String imageId) {
-		try {
-			return android.provider.MediaStore.Images.Thumbnails.getThumbnail(
-					resolver,
-					Long.parseLong(imageId),
-					android.provider.MediaStore.Images.Thumbnails.MINI_KIND,
-					null);
-		} catch (Exception e) {
-			Log.e(TAG, "Error getting image thumbnail: " + e.getMessage(), e);
-			return null;
-		}
-	}
-
-	private Bitmap getBitmap(ContentResolver resolver, Uri uri) {
-		try {
-			return MediaStore.Images.Media.getBitmap(resolver, uri);
-		} catch (Exception e) {
-			Log.e(TAG, "Error getting bitmap: " + e.getMessage(), e);
-			return null;
-		}
 	}
 }
