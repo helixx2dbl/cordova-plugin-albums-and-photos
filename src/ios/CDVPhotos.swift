@@ -898,17 +898,17 @@ class CDVPhotos: CDVPlugin {
                     self.failure(command: command, message: "Could not create CGImage from data.")
                     return
                 }
-
+                
                 // Convert CGImagePropertyOrientation to UIImage.Orientation
                 let uiOrientation = self.convertOrientation(orientation)
                 let image = UIImage(cgImage: cgImage, scale: 1.0, orientation: uiOrientation)
-
+                
                 // Now normalize and convert to sRGB in one step
                 guard let finalImage = self.normalizeAndConvertToSRGB(image) else {
                     self.failure(command: command, message: "Could not convert colorspace")
                     return
                 }
-
+                
                 guard let mediaData = finalImage.jpegData(compressionQuality: 0.8) else {
                     self.failure(command: command, message: "Could not get JPEG representation of image.")
                     return
@@ -917,19 +917,19 @@ class CDVPhotos: CDVPlugin {
             }
         }
     }
-
+    
     func normalizeAndConvertToSRGB(_ image: UIImage) -> UIImage? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = image.scale
         format.preferredRange = .standard  // sRGB
-
+        
         let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
-
+        
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: image.size))
         }
     }
-
+    
     func convertOrientation(_ cgOrientation: CGImagePropertyOrientation) -> UIImage.Orientation {
         switch cgOrientation {
         case .up: return .up
@@ -958,32 +958,30 @@ class CDVPhotos: CDVPlugin {
     
     func convertImageToSRGB(_ image: UIImage) -> UIImage? {
         guard let cgImage = image.cgImage else { return nil }
-        
-        // Create image rectangle with current image width/height
-        let imageRect = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
-        
-        // sRGB color space
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         
-        // Create bitmap context with current image size and sRGB colorspace
+        let width = cgImage.width
+        let height = cgImage.height
+        
         guard let context = CGContext(
             data: nil,
-            width: Int(imageRect.size.width),
-            height: Int(imageRect.size.height),
+            width: width,
+            height: height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: colorSpace,
-            bitmapInfo: cgImage.bitmapInfo.rawValue
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         
-        // Draw image into current context
-        context.draw(cgImage, in: imageRect)
+        // Draw respecting orientation by using UIImage's draw method
+        UIGraphicsPushContext(context)
+        image.draw(in: CGRect(x: 0, y: 0, width: width, height: height))
+        UIGraphicsPopContext()
         
-        // Create bitmap image from context
         guard let newCGImage = context.makeImage() else { return nil }
         
-        // Return the new sRGB image
-        return UIImage(cgImage: newCGImage)
+        // Orientation is now baked in, so use .up
+        return UIImage(cgImage: newCGImage, scale: image.scale, orientation: .up)
     }
 
     @objc(video:)
