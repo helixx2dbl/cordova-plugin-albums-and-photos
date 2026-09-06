@@ -188,7 +188,7 @@ class CDVPhotos: CDVPlugin {
     
     private func partial(command: CDVInvokedUrlCommand, array: [Any]) {
         let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: array)
-        pluginResult?.setKeepCallbackAs(true)
+        pluginResult.setKeepCallbackAs(true)
         self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
     }
 
@@ -1017,7 +1017,7 @@ class CDVPhotos: CDVPlugin {
                 // Send progress update to JavaScript
                 let progressUpdate: [String: Any] = ["type": "download_progress", "progress": progress]
                 let pluginResult = CDVPluginResult(status: .ok, messageAs: progressUpdate)
-                pluginResult?.setKeepCallbackAs(true)
+                pluginResult.setKeepCallbackAs(true)
                 self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
             }
 
