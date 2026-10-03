@@ -1145,11 +1145,19 @@ extension CDVPhotos: PHPickerViewControllerDelegate {
         guard let command = self.pickerCommand else { return }
         self.pickerCommand = nil
 
+        if results.isEmpty {
+            // user cancelled - an empty array so JS resolves cleanly
+            self.success(command: command, array: [])
+            return
+        }
+
         let identifiers = results.compactMap { $0.assetIdentifier }
         if identifiers.isEmpty {
-            // user cancelled, or system withheld asset identifiers (limited library
-            // access). either way return an empty array so JS resolves cleanly.
-            self.success(command: command, array: [])
+            // they DID pick something but the system withheld the asset identifiers (limited
+            // library access, or a provider that does not expose them).  this used to come
+            // back as an empty array too, which JS treated as a cancel - the user tapped
+            // videos, nothing happened, and nobody was told why
+            self.failure(command: command, message: "Photo library access is limited - the selected items could not be identified")
             return
         }
 
