@@ -38,6 +38,12 @@ private enum Constants {
     static let pListLimit = "limit"
     static let pListInterval = "interval"
     static let pIncludeShared = "includeShared"
+    static let pHideScreenshots = "hideScreenshots"
+    static let pFavoritesOnly = "favoritesOnly"
+    static let pOrientation = "orientation"
+    static let pMinLongSide = "minLongSide"
+    static let pMinShortSide = "minShortSide"
+    static let pMinDuration = "minDuration"
     static let pSearchText = "searchText"
     static let pStartDate = "startDate"
     static let pEndDate = "endDate"
@@ -474,6 +480,7 @@ class CDVPhotos: CDVPlugin {
                 predicates.append(NSPredicate( format: "creationDate >= %@ AND creationDate < %@", range!.start as NSDate, range!.end as NSDate))
             }
             
+            predicates.append(contentsOf: self.filterPredicates(from: options))
             let finalPredicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
             
             var result: [[String: Any]]? = nil
@@ -532,6 +539,7 @@ class CDVPhotos: CDVPlugin {
             
             
             // Combine all predicates
+            predicates.append(contentsOf: self.filterPredicates(from: options))
             let finalPredicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
             
             var result: [[String: Any]]? = nil
@@ -614,6 +622,47 @@ class CDVPhotos: CDVPlugin {
         }
         
         return (start: startDate, end: endDate)
+    }
+
+    // Optional filters shared by photos() and videos(). Each is one PhotoKit predicate, so
+    // they AND together and apply to the all-media and per-collection fetches alike.
+    private func filterPredicates(from options: [String: Any]) -> [NSPredicate] {
+        var predicates: [NSPredicate] = []
+
+        let hideScreenshots: Bool = valueFrom(dictionary: options, byKey: Constants.pHideScreenshots, default: false)
+        if hideScreenshots {
+            predicates.append(NSPredicate(format: "(mediaSubtypes & %d) == 0", PHAssetMediaSubtype.photoScreenshot.rawValue))
+        }
+
+        let favoritesOnly: Bool = valueFrom(dictionary: options, byKey: Constants.pFavoritesOnly, default: false)
+        if favoritesOnly {
+            predicates.append(NSPredicate(format: "favorite == YES"))
+        }
+
+        // "portrait" (square counts as portrait) or "landscape"; anything else means no filter
+        let orientation: String = valueFrom(dictionary: options, byKey: Constants.pOrientation, default: "")
+        if orientation == "portrait" {
+            predicates.append(NSPredicate(format: "pixelHeight >= pixelWidth"))
+        } else if orientation == "landscape" {
+            predicates.append(NSPredicate(format: "pixelWidth > pixelHeight"))
+        }
+
+        // minimum size regardless of orientation: the longer side must reach minLongSide and
+        // the shorter side minShortSide. lets a caller hide images too small to print well
+        let minLongSide: Int = valueFrom(dictionary: options, byKey: Constants.pMinLongSide, default: 0)
+        let minShortSide: Int = valueFrom(dictionary: options, byKey: Constants.pMinShortSide, default: 0)
+        if minLongSide > 0 || minShortSide > 0 {
+            predicates.append(NSPredicate(
+                format: "(pixelWidth >= pixelHeight AND pixelWidth >= %d AND pixelHeight >= %d) OR (pixelHeight > pixelWidth AND pixelHeight >= %d AND pixelWidth >= %d)",
+                minLongSide, minShortSide, minLongSide, minShortSide))
+        }
+
+        let minDuration: Double = valueFrom(dictionary: options, byKey: Constants.pMinDuration, default: 0)
+        if minDuration > 0 {
+            predicates.append(NSPredicate(format: "duration >= %f", minDuration))
+        }
+
+        return predicates
     }
 
     // Update fetchAllMedia to accept predicate
