@@ -37,6 +37,7 @@ private enum Constants {
     static let pListOffset = "offset"
     static let pListLimit = "limit"
     static let pListInterval = "interval"
+    static let pIncludeShared = "includeShared"
     static let pSearchText = "searchText"
     static let pStartDate = "startDate"
     static let pEndDate = "endDate"
@@ -188,7 +189,9 @@ class CDVPhotos: CDVPlugin {
     
     private func partial(command: CDVInvokedUrlCommand, array: [Any]) {
         let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: array)
-        pluginResult.setKeepCallbackAs(true)
+        // cordova-ios 7 returns CDVPluginResult? here, cordova-ios 8 (NS_ASSUME_NONNULL)
+        // returns CDVPluginResult. coercing to optional first compiles against both
+        (pluginResult as CDVPluginResult?)?.setKeepCallbackAs(true)
         self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
     }
 
@@ -628,7 +631,14 @@ class CDVPhotos: CDVPlugin {
         fetchOptions.includeAllBurstAssets = false
         fetchOptions.includeHiddenAssets = false
         
-        let allSources: PHAssetSourceType = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+        // PhotoKit's default excludes iCloud Shared Album assets, this plugin opts them in.
+        // includeShared:false puts the default back for the all-photos grid; the per-album
+        // fetch below always includes them so a picked shared album still returns its photos
+        let includeShared: Bool = valueFrom(dictionary: options, byKey: Constants.pIncludeShared, default: true)
+        var allSources: PHAssetSourceType = [.typeUserLibrary, .typeiTunesSynced]
+        if includeShared {
+            allSources.insert(.typeCloudShared)
+        }
         fetchOptions.includeAssetSourceTypes = allSources
         
         // Apply the search predicate if provided
@@ -1017,7 +1027,7 @@ class CDVPhotos: CDVPlugin {
                 // Send progress update to JavaScript
                 let progressUpdate: [String: Any] = ["type": "download_progress", "progress": progress]
                 let pluginResult = CDVPluginResult(status: .ok, messageAs: progressUpdate)
-                pluginResult.setKeepCallbackAs(true)
+                (pluginResult as CDVPluginResult?)?.setKeepCallbackAs(true) // see partial()
                 self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
             }
 

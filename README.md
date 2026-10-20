@@ -83,6 +83,10 @@ An optional `option` argument supports only one field `collectionMode` with the 
 | `SMART`   | Return list of albums that gather and display photos automatically based on criteria you specify. |
 | `ALBUMS`  | Return list of all regular albums you create and name.                                            |
 | `MOMENTS` | Return list of albums that are automatically generated based on date and location.                |
+| `RECENT`  | Return the Recently Added smart album. iOS only.                                                   |
+| `SHARED`  | Return the user's iCloud Shared Albums (albums other people share with them). iOS only.            |
+| `IMPORTED`| Return imported albums. iOS only.                                                                  |
+| `FACES`   | Return synced faces albums. iOS only.                                                              |
 
 For Android platform `SMART`, `ALBUMS` and `MOMENTS` all work as `ALBUMS`.
 
@@ -130,6 +134,7 @@ This function requests the list of photo assets that are available in specified 
     | `offset`   | int  |   `0`   | Amount of first N photos that should be skipped during fetch. Less than `0` means `0`.                       |
     | `limit`    | int  |   `0`   | Maximal number of photos that should be returned to client at once during fetch. `0` or less means no limit. |
     | `interval` | int  |  `30`   | A time interval delay in millis between bundle fetches. Less than `0` means default.                         |
+    | `includeShared` | bool | `true` | iOS only. Whether photos from iCloud Shared Albums are included when no `collectionIds` is given. PhotoKit excludes them by default; this plugin includes them unless you pass `false`. Fetching a shared album by id always returns its photos. |
 
 **Please be warned** that _`limit` option doesn't stop fetching process_ - it just limits the amount
 of fetched photo records that are aggregated in plugin for client -
@@ -227,6 +232,7 @@ This function requests the list of video assets that are available in specified 
     | `offset`   | int  |   `0`   | Amount of first N videos that should be skipped during fetch. Less than `0` means `0`.                       |
     | `limit`    | int  |   `0`   | Maximal number of videos that should be returned to client at once during fetch. `0` or less means no limit. |
     | `interval` | int  |  `30`   | A time interval delay in millis between bundle fetches. Less than `0` means default.                         |
+    | `includeShared` | bool | `true` | iOS only. Whether videos from iCloud Shared Albums are included when no `collectionIds` is given. PhotoKit excludes them by default; this plugin includes them unless you pass `false`. Fetching a shared album by id always returns its videos. |
 
 **Please be warned** that _`limit` option doesn't stop fetching process_ - it just limits the amount
 of fetched video records that are aggregated in plugin for client -
