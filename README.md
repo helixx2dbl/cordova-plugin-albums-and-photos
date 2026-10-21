@@ -137,7 +137,7 @@ This function requests the list of photo assets that are available in specified 
     | `includeShared` | bool | `true` | iOS only. Whether photos from iCloud Shared Albums are included when no `collectionIds` is given. PhotoKit excludes them by default; this plugin includes them unless you pass `false`. Fetching a shared album by id always returns its photos. |
     | `hideScreenshots` | bool | `false` | iOS only. Leave out assets PhotoKit flags as screenshots. |
     | `favoritesOnly` | bool | `false` | iOS only. Only assets marked as favorites. |
-    | `orientation` | string | | iOS only. `portrait` (square counts as portrait) or `landscape`. Anything else means no filter. All of these filters AND together and also apply when fetching by `collectionIds`. |
+    | `orientation` | string | | iOS only. `portrait` (square counts as portrait) or `landscape`. Anything else means no filter. Unlike the others this is not a predicate (PhotoKit cannot compare two fields) but is applied per asset while paging, so `offset` and `limit` still count matching assets; the fetch is unbounded while it is set. All of these filters AND together and also apply when fetching by `collectionIds`. |
     | `minLongSide` / `minShortSide` | int | `0` | iOS only. Minimum pixel size regardless of orientation: the longer side must reach `minLongSide` and the shorter side `minShortSide`. Useful for hiding images too small to print. |
 
 **Please be warned** that _`limit` option doesn't stop fetching process_ - it just limits the amount
@@ -239,7 +239,7 @@ This function requests the list of video assets that are available in specified 
     | `includeShared` | bool | `true` | iOS only. Whether videos from iCloud Shared Albums are included when no `collectionIds` is given. PhotoKit excludes them by default; this plugin includes them unless you pass `false`. Fetching a shared album by id always returns its videos. |
     | `hideScreenshots` | bool | `false` | iOS only. Leave out assets PhotoKit flags as screenshots. |
     | `favoritesOnly` | bool | `false` | iOS only. Only assets marked as favorites. |
-    | `orientation` | string | | iOS only. `portrait` (square counts as portrait) or `landscape`. Anything else means no filter. All of these filters AND together and also apply when fetching by `collectionIds`. |
+    | `orientation` | string | | iOS only. `portrait` (square counts as portrait) or `landscape`. Anything else means no filter. Unlike the others this is not a predicate (PhotoKit cannot compare two fields) but is applied per asset while paging, so `offset` and `limit` still count matching assets; the fetch is unbounded while it is set. All of these filters AND together and also apply when fetching by `collectionIds`. |
     | `minLongSide` / `minShortSide` | int | `0` | iOS only. Minimum pixel size regardless of orientation: the longer side must reach `minLongSide` and the shorter side `minShortSide`. Useful for hiding images too small to print. |
     | `minDuration` | number | `0` | iOS only. Minimum duration in seconds. |
 
