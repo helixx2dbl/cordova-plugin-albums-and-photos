@@ -624,6 +624,28 @@ class CDVPhotos: CDVPlugin {
         return (start: startDate, end: endDate)
     }
 
+    // Orientation is the one filter that cannot be a predicate: PhotoKit refuses any
+    // predicate that compares two fields ("Unsupported predicate in fetch options:
+    // pixelHeight >= pixelWidth"), so it is checked per asset inside the fetch loops.
+    // "portrait" (square counts as portrait) or "landscape"; anything else means no filter
+    private func orientationFilter(from options: [String: Any]) -> String {
+        let orientation: String = valueFrom(dictionary: options, byKey: Constants.pOrientation, default: "")
+        if orientation == "portrait" || orientation == "landscape" {
+            return orientation
+        }
+        return ""
+    }
+
+    private func assetMatchesOrientation(_ asset: PHAsset, _ orientation: String) -> Bool {
+        if orientation == "portrait" {
+            return asset.pixelHeight >= asset.pixelWidth
+        }
+        if orientation == "landscape" {
+            return asset.pixelWidth > asset.pixelHeight
+        }
+        return true
+    }
+
     // Optional filters shared by photos() and videos(). Each is one PhotoKit predicate, so
     // they AND together and apply to the all-media and per-collection fetches alike.
     private func filterPredicates(from options: [String: Any]) -> [NSPredicate] {
@@ -637,14 +659,6 @@ class CDVPhotos: CDVPlugin {
         let favoritesOnly: Bool = valueFrom(dictionary: options, byKey: Constants.pFavoritesOnly, default: false)
         if favoritesOnly {
             predicates.append(NSPredicate(format: "favorite == YES"))
-        }
-
-        // "portrait" (square counts as portrait) or "landscape"; anything else means no filter
-        let orientation: String = valueFrom(dictionary: options, byKey: Constants.pOrientation, default: "")
-        if orientation == "portrait" {
-            predicates.append(NSPredicate(format: "pixelHeight >= pixelWidth"))
-        } else if orientation == "landscape" {
-            predicates.append(NSPredicate(format: "pixelWidth > pixelHeight"))
         }
 
         // minimum size regardless of orientation: the longer side must reach minLongSide and
@@ -700,7 +714,10 @@ class CDVPhotos: CDVPlugin {
         // cap the fetch at offset+limit so PhotoKit doesnt materialize the whole library
         // for paged queries. previously fetchLimit was only set when offset == 0, so
         // every subsequent page enumerated unbounded
-        if limit > 0 {
+        // (an orientation filter is applied per asset below, so the cap would undercount -
+        // the fetch stays unbounded and the loop stops itself once limit matches are found)
+        let orientation = self.orientationFilter(from: options)
+        if limit > 0 && orientation.isEmpty {
             fetchOptions.fetchLimit = offset + limit
         }
 
@@ -714,6 +731,11 @@ class CDVPhotos: CDVPlugin {
             guard let self = self else { return }
             if self.photosCommand == nil {
                 stop.pointee = true
+                return
+            }
+
+            // skipped assets do not count toward offset, so paging stays in matched assets
+            if !self.assetMatchesOrientation(asset, orientation) {
                 return
             }
 
@@ -766,6 +788,7 @@ class CDVPhotos: CDVPlugin {
         
         var fetchedCount = 0
         var result: [[String: Any]] = []
+        let orientation = self.orientationFilter(from: options)
 
         fetchResultAssetCollections.enumerateObjects { [weak self] (assetCollection, _, stopCollections) in
             guard let self = self else { return }
@@ -792,7 +815,8 @@ class CDVPhotos: CDVPlugin {
             // cap the fetch at offset+limit so PhotoKit doesnt materialize the whole
             // collection for paged queries. previously fetchLimit was only set when
             // offset == 0, so every subsequent page enumerated unbounded
-            if limit > 0 {
+            // (see fetchAllMedia - no cap when an orientation filter is applied per asset)
+            if limit > 0 && orientation.isEmpty {
                 fetchOptions.fetchLimit = offset + limit
             }
 
@@ -802,6 +826,10 @@ class CDVPhotos: CDVPlugin {
                 if self.photosCommand == nil {
                     stopAssets.pointee = true
                     stopCollections.pointee = true
+                    return
+                }
+
+                if !self.assetMatchesOrientation(asset, orientation) {
                     return
                 }
 
