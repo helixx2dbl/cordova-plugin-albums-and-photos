@@ -662,12 +662,21 @@ class CDVPhotos: CDVPlugin {
         }
 
         // minimum size regardless of orientation: the longer side must reach minLongSide and
-        // the shorter side minShortSide. lets a caller hide images too small to print well
-        let minLongSide: Int = valueFrom(dictionary: options, byKey: Constants.pMinLongSide, default: 0)
-        let minShortSide: Int = valueFrom(dictionary: options, byKey: Constants.pMinShortSide, default: 0)
+        // the shorter side minShortSide. lets a caller hide images too small to print well.
+        // PhotoKit throws "Unsupported predicate in fetch options: pixelWidth >= pixelHeight"
+        // for any predicate that compares two fields, so this must only compare against
+        // constants. With long >= short, "max(w,h) >= long AND min(w,h) >= short" is exactly
+        // "(w >= long AND h >= short) OR (h >= long AND w >= short)".
+        var minLongSide: Int = valueFrom(dictionary: options, byKey: Constants.pMinLongSide, default: 0)
+        var minShortSide: Int = valueFrom(dictionary: options, byKey: Constants.pMinShortSide, default: 0)
+        if minShortSide > minLongSide {
+            let swap = minLongSide
+            minLongSide = minShortSide
+            minShortSide = swap
+        }
         if minLongSide > 0 || minShortSide > 0 {
             predicates.append(NSPredicate(
-                format: "(pixelWidth >= pixelHeight AND pixelWidth >= %d AND pixelHeight >= %d) OR (pixelHeight > pixelWidth AND pixelHeight >= %d AND pixelWidth >= %d)",
+                format: "(pixelWidth >= %d AND pixelHeight >= %d) OR (pixelHeight >= %d AND pixelWidth >= %d)",
                 minLongSide, minShortSide, minLongSide, minShortSide))
         }
 

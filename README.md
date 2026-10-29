@@ -138,7 +138,7 @@ This function requests the list of photo assets that are available in specified 
     | `hideScreenshots` | bool | `false` | iOS only. Leave out assets PhotoKit flags as screenshots. |
     | `favoritesOnly` | bool | `false` | iOS only. Only assets marked as favorites. |
     | `orientation` | string | | iOS only. `portrait` (square counts as portrait) or `landscape`. Anything else means no filter. Unlike the others this is not a predicate (PhotoKit cannot compare two fields) but is applied per asset while paging, so `offset` and `limit` still count matching assets; the fetch is unbounded while it is set. All of these filters AND together and also apply when fetching by `collectionIds`. |
-    | `minLongSide` / `minShortSide` | int | `0` | iOS only. Minimum pixel size regardless of orientation: the longer side must reach `minLongSide` and the shorter side `minShortSide`. Useful for hiding images too small to print. |
+    | `minLongSide` / `minShortSide` | int | `0` | iOS only. Minimum pixel size regardless of orientation: the longer side must reach `minLongSide` and the shorter side `minShortSide`. Useful for hiding images too small to print. This one IS a predicate (it only compares against constants, see `filterPredicates`), so `limit` still works with it. |
 
 **Please be warned** that _`limit` option doesn't stop fetching process_ - it just limits the amount
 of fetched photo records that are aggregated in plugin for client -
@@ -240,7 +240,7 @@ This function requests the list of video assets that are available in specified 
     | `hideScreenshots` | bool | `false` | iOS only. Leave out assets PhotoKit flags as screenshots. |
     | `favoritesOnly` | bool | `false` | iOS only. Only assets marked as favorites. |
     | `orientation` | string | | iOS only. `portrait` (square counts as portrait) or `landscape`. Anything else means no filter. Unlike the others this is not a predicate (PhotoKit cannot compare two fields) but is applied per asset while paging, so `offset` and `limit` still count matching assets; the fetch is unbounded while it is set. All of these filters AND together and also apply when fetching by `collectionIds`. |
-    | `minLongSide` / `minShortSide` | int | `0` | iOS only. Minimum pixel size regardless of orientation: the longer side must reach `minLongSide` and the shorter side `minShortSide`. Useful for hiding images too small to print. |
+    | `minLongSide` / `minShortSide` | int | `0` | iOS only. Minimum pixel size regardless of orientation: the longer side must reach `minLongSide` and the shorter side `minShortSide`. Useful for hiding images too small to print. This one IS a predicate (it only compares against constants, see `filterPredicates`), so `limit` still works with it. |
     | `minDuration` | number | `0` | iOS only. Minimum duration in seconds. |
 
 **Please be warned** that _`limit` option doesn't stop fetching process_ - it just limits the amount
