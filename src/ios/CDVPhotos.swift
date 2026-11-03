@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import CoreMedia
 import Photos
 import PhotosUI
 // Assuming CDVPlugin is the base class, adjust if necessary
@@ -1117,62 +1119,212 @@ class CDVPhotos: CDVPlugin {
                 self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
             }
 
-            PHImageManager.default().requestExportSession(forVideo: asset, options: options, exportPreset: AVAssetExportPresetPassthrough) { [weak self] (exportSession, info) in
+            // Passthrough copies the stored samples untouched, which is what we want for a clip
+            // straight off the camera and is free. The one thing the editor cannot take is a
+            // clip whose ENABLED audio track is not plain AAC/PCM (see planVideoExport), and
+            // those are fixed without touching the video where possible.
+            self.planVideoExport(asset) { [weak self] (plan, why) in
                 guard let self = self else { return }
-
-                if let error = info?[PHImageErrorKey] as? Error { // Check for specific PHImageErrorKey
-                    self.failure(command: command, message: error.localizedDescription)
-                    return
-                }
-
-                guard let session = exportSession else {
-                    self.failure(command: command, message: "Could not create export session for video asset")
-                    return
-                }
-
+                NSLog("CDVPhotos: exporting video \(asset.localIdentifier) via \(plan.label) (\(why))")
                 let outputFilePath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(asset.localIdentifier.replacingOccurrences(of: "/", with: "_")).mov")
-                
-                // Remove existing file if any
-                let fileManager = FileManager.default
-                if fileManager.fileExists(atPath: outputFilePath.path) {
-                    do {
-                        try fileManager.removeItem(at: outputFilePath)
-                    } catch let error {
-                        self.failure(command: command, message: "Could not remove existing temp file: \(error.localizedDescription)")
+                switch plan {
+                case .swapAudio(let composition):
+                    guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+                        self.failure(command: command, message: "Could not create export session for the audio-swapped video")
                         return
                     }
-                }
-                
-                session.outputURL = outputFilePath
-                
-                // Determine a suitable output file type.
-                if session.supportedFileTypes.contains(.mov) {
-                    session.outputFileType = .mov
-                } else if let firstSupportedType = session.supportedFileTypes.first {
-                    session.outputFileType = firstSupportedType
-                } else {
-                    self.failure(command: command, message: "No supported output file types for export session")
-                    return
-                }
-
-                session.exportAsynchronously { [weak self] in
-                    guard let self = self else { return }
-                    switch session.status {
-                    case .exporting:
-                        let result = ["type":"export_progress","uri": session.progress.description]
-                        self.success(command: command, json: result)
-                    case .completed:
-                        let result = ["type":"download_complete","uri": outputFilePath.absoluteString]
-                        self.success(command: command, json: result)
-                    case .failed:
-                        let errorMessage = session.error?.localizedDescription ?? "Video export failed with unknown error"
-                        self.failure(command: command, message: "Video export failed: \(errorMessage)")
-                    case .cancelled:
-                        self.failure(command: command, message: "Video export cancelled")
-                    default:
-                        self.failure(command: command, message: "Video export completed with unexpected status: \(session.status.rawValue)")
+                    self.runExport(session: session, to: outputFilePath, command: command)
+                case .photos(let preset):
+                    PHImageManager.default().requestExportSession(forVideo: asset, options: options, exportPreset: preset) { [weak self] (exportSession, info) in
+                        guard let self = self else { return }
+                        if let error = info?[PHImageErrorKey] as? Error { // Check for specific PHImageErrorKey
+                            self.failure(command: command, message: error.localizedDescription)
+                            return
+                        }
+                        guard let session = exportSession else {
+                            self.failure(command: command, message: "Could not create export session for video asset (preset \(preset))")
+                            return
+                        }
+                        self.runExport(session: session, to: outputFilePath, command: command)
                     }
                 }
+            }
+        }
+    }
+
+    private enum VideoExportPlan {
+        case photos(preset: String)              // Photos' own export session with that preset
+        case swapAudio(composition: AVAsset)     // our composition: video as is + the plain AAC track, passthrough
+
+        var label: String {
+            switch self {
+            case .photos(let preset): return preset
+            case .swapAudio: return "swapAudio+Passthrough"
+            }
+        }
+    }
+
+    // Decides how the clip gets to the temp file. Found Nov 2026 by pulling the picked files off
+    // a phone: iPhone 16+ records two audio tracks, stereo AAC enabled and 4-channel APAC
+    // (spatial audio) as a disabled alternate. Every file Photos writes on a cut - Save Video
+    // as New Clip, and the composition it serves for a non-destructive Save Video trim - has
+    // them FLIPPED, APAC enabled and AAC disabled, and VESDK's AVAssetWriter cannot take APAC:
+    // it fails with -11800 / -12780 the moment export starts. HDR, codec, resolution and the
+    // timeline are all irrelevant (verified: an SDR cut fails the same way, a lossless cut has
+    // a clean timeline, and any freshly rendered file works because a render transcodes the
+    // audio to AAC). So:
+    //   - enabled audio is AAC/PCM, <= 2 channels: Photos passthrough, exactly what always shipped
+    //     (edited clips from phones without spatial audio included - their trims never failed)
+    //   - otherwise, if the asset also carries a plain AAC/PCM track (the disabled one): a
+    //     composition of the video track(s) as they are plus that audio track, passthrough
+    //     exported by us. ~0.1s, video bytes untouched, works for AVURLAsset and for the
+    //     composition Photos serves for a trim (tested on the Mac with the real clip)
+    //   - otherwise (no plain audio track at all): Photos' HEVC highest-quality render, slow
+    //     at source resolution but it transcodes the audio and the editor takes the result
+    private func planVideoExport(_ asset: PHAsset, _ completion: @escaping (VideoExportPlan, String) -> Void) {
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.version = .current
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { (avAsset, _, _) in
+            guard let avAsset = avAsset else {
+                completion(.photos(preset: AVAssetExportPresetPassthrough), "no AVAsset")
+                return
+            }
+            avAsset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
+                let audioWhy = self.unsupportedEnabledAudio(avAsset)
+                let kind = "\(type(of: avAsset))"
+                if audioWhy == "" {
+                    completion(.photos(preset: AVAssetExportPresetPassthrough), "\(kind) audio ok")
+                    return
+                }
+                if let composition = self.compositionWithPlainAudio(avAsset) {
+                    completion(.swapAudio(composition: composition), "\(kind) audio \(audioWhy)")
+                    return
+                }
+                completion(.photos(preset: AVAssetExportPresetHEVCHighestQuality), "\(kind) audio \(audioWhy), no plain audio track")
+            }
+        }
+    }
+
+    // "" when every enabled audio track is AAC or PCM with at most two channels, otherwise
+    // a short description of the first one that is not (codec fourcc + channel count).
+    private func unsupportedEnabledAudio(_ avAsset: AVAsset) -> String {
+        for audio in avAsset.tracks(withMediaType: .audio) {
+            if audio.isEnabled && !CDVPhotos.isPlainAudio(audio) {
+                return CDVPhotos.describeAudio(audio)
+            }
+        }
+        return ""
+    }
+
+    private static func isPlainAudio(_ track: AVAssetTrack) -> Bool {
+        for fd in track.formatDescriptions as! [CMFormatDescription] {
+            let subtype = CMFormatDescriptionGetMediaSubType(fd)
+            if subtype != kAudioFormatMPEG4AAC && subtype != kAudioFormatLinearPCM {
+                return false
+            }
+            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd), asbd.pointee.mChannelsPerFrame > 2 {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func describeAudio(_ track: AVAssetTrack) -> String {
+        var out = ""
+        for fd in track.formatDescriptions as! [CMFormatDescription] {
+            var channels: UInt32 = 0
+            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd) {
+                channels = asbd.pointee.mChannelsPerFrame
+            }
+            out = "\(fourcc(CMFormatDescriptionGetMediaSubType(fd)))/\(channels)ch"
+        }
+        return out
+    }
+
+    // The video track(s) exactly as they are, plus the first plain AAC/PCM audio track in place
+    // of whatever was enabled. nil when there is no plain audio track to swap in.
+    private func compositionWithPlainAudio(_ avAsset: AVAsset) -> AVAsset? {
+        guard let plainAudio = avAsset.tracks(withMediaType: .audio).first(where: { CDVPhotos.isPlainAudio($0) }) else {
+            return nil
+        }
+        let composition = AVMutableComposition()
+        do {
+            for video in avAsset.tracks(withMediaType: .video) {
+                guard let target = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                    return nil
+                }
+                try target.insertTimeRange(video.timeRange, of: video, at: .zero)
+                target.preferredTransform = video.preferredTransform
+            }
+            guard let audioTarget = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                return nil
+            }
+            try audioTarget.insertTimeRange(plainAudio.timeRange, of: plainAudio, at: .zero)
+        } catch {
+            NSLog("CDVPhotos: could not build the audio-swapped composition: \(error.localizedDescription)")
+            return nil
+        }
+        return composition
+    }
+
+    private static func fourcc(_ value: FourCharCode) -> String {
+        let bytes = [UInt8(value >> 24 & 0xff), UInt8(value >> 16 & 0xff), UInt8(value >> 8 & 0xff), UInt8(value & 0xff)]
+        return String(bytes: bytes, encoding: .ascii) ?? "????"
+    }
+
+    // Runs one export session to the temp path, reporting export_progress to JS every quarter
+    // second while it runs (the picker shows "Exporting n/m - x%"; before this the only
+    // progress it ever saw was the iCloud download, so a long render sat on that label).
+    private func runExport(session: AVAssetExportSession, to outputFilePath: URL, command: CDVInvokedUrlCommand) {
+        // Remove existing file if any
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: outputFilePath.path) {
+            do {
+                try fileManager.removeItem(at: outputFilePath)
+            } catch let error {
+                self.failure(command: command, message: "Could not remove existing temp file: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        session.outputURL = outputFilePath
+
+        // Determine a suitable output file type.
+        if session.supportedFileTypes.contains(.mov) {
+            session.outputFileType = .mov
+        } else if let firstSupportedType = session.supportedFileTypes.first {
+            session.outputFileType = firstSupportedType
+        } else {
+            self.failure(command: command, message: "No supported output file types for export session")
+            return
+        }
+
+        let ticker = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        ticker.schedule(deadline: .now() + 0.25, repeating: 0.25)
+        ticker.setEventHandler { [weak self, weak session] in
+            guard let self = self, let session = session, session.status == .exporting else { return }
+            let progressUpdate: [String: Any] = ["type": "export_progress", "progress": session.progress]
+            let pluginResult = CDVPluginResult(status: .ok, messageAs: progressUpdate)
+            (pluginResult as CDVPluginResult?)?.setKeepCallbackAs(true)
+            self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+        }
+        ticker.resume()
+
+        session.exportAsynchronously { [weak self] in
+            ticker.cancel()
+            guard let self = self else { return }
+            switch session.status {
+            case .completed:
+                let result = ["type":"download_complete","uri": outputFilePath.absoluteString]
+                self.success(command: command, json: result)
+            case .failed:
+                let errorMessage = session.error?.localizedDescription ?? "Video export failed with unknown error"
+                self.failure(command: command, message: "Video export failed: \(errorMessage)")
+            case .cancelled:
+                self.failure(command: command, message: "Video export cancelled")
+            default:
+                self.failure(command: command, message: "Video export completed with unexpected status: \(session.status.rawValue)")
             }
         }
     }
