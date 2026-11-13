@@ -90,8 +90,9 @@ var Photos = {
 		exec(successCallback, errorCallback, "Photos", "image", [photoId]);
 	},
 
-	// iOS only: the full-size JPEG written to <tmp>/<fileName>, answers its file:// url.
-	// same image as image(), without the bytes crossing the bridge
+	// iOS only: the full-size JPEG written to <tmp>/<fileName>. same image as image(), without
+	// the bytes crossing the bridge. the success callback gets {type:"download_progress",
+	// progress:0-1} while iCloud hands the photo over, then {type:"download_complete", uri}
 	imageToFile: function (photoId, fileName, successCallback, errorCallback) {
 		exec(successCallback, errorCallback, "Photos", "imageToFile", [photoId, fileName]);
 	},

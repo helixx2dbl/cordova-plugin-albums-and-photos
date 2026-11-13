@@ -979,7 +979,9 @@ class CDVPhotos: CDVPlugin {
     private static let imageOverallSeconds: TimeInterval = 120
     private static let imageWatchdogQueue = DispatchQueue(label: "com.domax.cordova.photos.fullimage")
 
-    private func fetchFullImage(_ asset: PHAsset, completion: @escaping (FullImage?, String?) -> Void) {
+    // onProgress gets PhotoKit's download progress (0-1) while an iCloud asset comes down, so a
+    // caller can show that something is moving - a person who sees nothing change quits the app
+    private func fetchFullImage(_ asset: PHAsset, onProgress: ((Double) -> Void)? = nil, completion: @escaping (FullImage?, String?) -> Void) {
         let queue = CDVPhotos.imageWatchdogQueue
         let manager = PHImageManager.default()
         let started = Date()
@@ -1002,11 +1004,13 @@ class CDVPhotos: CDVPlugin {
 
         let progress: PHAssetImageProgressHandler = { (value, error, _, _) in
             queue.async {
+                if finished { return }
                 lastActivity = Date()
                 if let error = error {
                     NSLog("CDVPhotos: full-size image progress error for %@: %@", asset.localIdentifier, error.localizedDescription)
                 } else {
                     NSLog("CDVPhotos: full-size image progress for %@: %.2f", asset.localIdentifier, value)
+                    onProgress?(value)
                 }
             }
         }
@@ -1130,7 +1134,7 @@ class CDVPhotos: CDVPlugin {
     }
 
     // image(), except the JPEG is written to <tmp>/<fileName> (cordova-plugin-file's TEMPORARY
-    // root) and the file url comes back.  a 12MP photo re-encoded at 0.8 is several MB; as an
+    // root) and {type:"download_complete", uri} comes back, after download_progress messages.  a 12MP photo re-encoded at 0.8 is several MB; as an
     // ArrayBuffer that is a third bigger again in base64 and crosses the bridge in one
     // evaluateJavaScript call, which is slow and the one place a very large photo can vanish
     // without a callback.  a file is the cheap way, and the app wanted a file anyway
@@ -1145,7 +1149,14 @@ class CDVPhotos: CDVPlugin {
                 self.failure(command: command, message: "imageToFile needs a file name")
                 return
             }
-            self.fetchFullImage(asset) { (result, error) in
+            // like video(): {type:"download_progress", progress:0-1} while iCloud hands the photo
+            // over (keepCallback), then {type:"download_complete", uri:"file://..."}
+            self.fetchFullImage(asset, onProgress: { value in
+                let update: [String: Any] = ["type": "download_progress", "progress": value]
+                let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: update)
+                (pluginResult as CDVPluginResult?)?.setKeepCallbackAs(true)
+                self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+            }) { (result, error) in
                 guard let data = self.jpegData(from: result, error: error, command: command) else { return }
                 let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
                 do {
@@ -1154,7 +1165,7 @@ class CDVPhotos: CDVPlugin {
                     self.failure(command: command, message: "Could not write image file: \(writeError.localizedDescription)")
                     return
                 }
-                self.success(command: command, message: url.absoluteString)
+                self.success(command: command, json: ["type": "download_complete", "uri": url.absoluteString])
             }
         }
     }

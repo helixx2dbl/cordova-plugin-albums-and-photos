@@ -583,7 +583,9 @@ The `failure` callback function takes a string argument with error description.
 
 The same JPEG `image()` produces (sRGB, orientation baked in, quality 0.8), written to
 `<NSTemporaryDirectory()>/<fileName>` - the root of cordova-plugin-file's `TEMPORARY`
-filesystem - instead of being handed back as an ArrayBuffer. Answers the `file://` url.
+filesystem - instead of being handed back as an ArrayBuffer. Like `video()`, the success
+callback is called with `{type:"download_progress", progress:0-1}` while an iCloud asset
+downloads, then once with `{type:"download_complete", uri:"file://..."}`.
 Use it for full-size photos: the bytes never cross the JS bridge as base64.
 
 Both `image()` and `imageToFile()` run under a stall watchdog since 1.3.4: PhotoKit can
@@ -594,8 +596,9 @@ person to open the photo in the Photos app first. Progress callbacks reset the c
 moving iCloud download is allowed up to 120s.
 
 ```js
-Photos.imageToFile(photoId, "my_photo.jpg", function (url) {
-	window.resolveLocalFileSystemURL(url, function (entry) { /* upload it */ });
+Photos.imageToFile(photoId, "my_photo.jpg", function (result) {
+	if (result.type == "download_progress") { showPercent(result.progress); return; }
+	window.resolveLocalFileSystemURL(result.uri, function (entry) { /* upload it */ });
 }, function (message) {
 	alert(message);
 });
