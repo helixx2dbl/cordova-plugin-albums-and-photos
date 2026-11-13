@@ -90,6 +90,12 @@ var Photos = {
 		exec(successCallback, errorCallback, "Photos", "image", [photoId]);
 	},
 
+	// iOS only: the full-size JPEG written to <tmp>/<fileName>, answers its file:// url.
+	// same image as image(), without the bytes crossing the bridge
+	imageToFile: function (photoId, fileName, successCallback, errorCallback) {
+		exec(successCallback, errorCallback, "Photos", "imageToFile", [photoId, fileName]);
+	},
+
 	video: function (videoId, successCallback, errorCallback) {
 		exec(successCallback, errorCallback, "Photos", "video", [videoId]);
 	},

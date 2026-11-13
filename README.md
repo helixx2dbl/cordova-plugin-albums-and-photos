@@ -579,6 +579,28 @@ The `failure` callback function takes a string argument with error description.
     });
     ```
 
+### Get original photo as a file - `imageToFile()` (iOS only, 1.3.4)
+
+The same JPEG `image()` produces (sRGB, orientation baked in, quality 0.8), written to
+`<NSTemporaryDirectory()>/<fileName>` - the root of cordova-plugin-file's `TEMPORARY`
+filesystem - instead of being handed back as an ArrayBuffer. Answers the `file://` url.
+Use it for full-size photos: the bytes never cross the JS bridge as base64.
+
+Both `image()` and `imageToFile()` run under a stall watchdog since 1.3.4: PhotoKit can
+go silent on an iCloud Photos asset and never call back (Apple DTS, forums thread 813354).
+A request with no result and no progress for 6s is cancelled and retried through
+`requestImage`; if that is silent too the error callback gets a message that tells the
+person to open the photo in the Photos app first. Progress callbacks reset the clock, so a
+moving iCloud download is allowed up to 120s.
+
+```js
+Photos.imageToFile(photoId, "my_photo.jpg", function (url) {
+	window.resolveLocalFileSystemURL(url, function (entry) { /* upload it */ });
+}, function (message) {
+	alert(message);
+});
+```
+
 ### Get video data - `video()`
 
 This function requests the video data for a specified video ID. The video is copied to a temporary location and the path is returned.

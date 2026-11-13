@@ -6,6 +6,13 @@ import PhotosUI
 // Assuming CDVPlugin is the base class, adjust if necessary
 // import Cordova // Or the specific Cordova module
 
+// what fetchFullImage hands back: the original bytes plus their orientation from the
+// primary request, or an already-decoded UIImage from the fallback request
+private enum FullImage {
+    case data(Data, CGImagePropertyOrientation)
+    case image(UIImage)
+}
+
 // MARK: - Constants
 private enum Constants {
     static let pId = "id"
@@ -61,6 +68,7 @@ private enum Constants {
     static let ePermission = "Access to Photo Library permission required"
     static let eCollectionMode = "Unsupported collection mode"
     static let ePhotoNoData = "Specified photo has no data"
+    static let ePhotoStalled = "This photo did not load from your photo library (it may still be in iCloud). Open it in the Photos app so it downloads, then try again."
     static let ePhotoThumb = "Cannot get a thumbnail of photo"
     static let ePhotoIdUndef = "Photo ID is undefined"
     static let ePhotoIdWrong = "Photo with specified ID wasn't found"
@@ -956,66 +964,201 @@ class CDVPhotos: CDVPlugin {
         }
     }
 
+    // MARK: - Full-size image, with a stall watchdog (1.3.4)
+
+    // PhotoKit sometimes never answers a full-size request for an iCloud Photos asset: neither
+    // the result handler nor the progress handler fires, and a force-quit does not always clear
+    // it (Apple DTS on forums thread 813354: iOS 17-26, a framework bug, seen on edited Portrait
+    // shots).  The Short Years waited on that forever with "Saving Images..." up, and since the
+    // app serialises these fetches one stuck photo also blocked every later save.  now a request
+    // that shows no sign of life for imageStallSeconds is cancelled and retried through
+    // requestImage (DTS's suggested fallback); if that is silent too the caller gets
+    // ePhotoStalled, which the app can show.  progress callbacks count as life, so a slow iCloud
+    // download that is actually moving is left alone, up to imageOverallSeconds
+    private static let imageStallSeconds: TimeInterval = 6
+    private static let imageOverallSeconds: TimeInterval = 120
+    private static let imageWatchdogQueue = DispatchQueue(label: "com.domax.cordova.photos.fullimage")
+
+    private func fetchFullImage(_ asset: PHAsset, completion: @escaping (FullImage?, String?) -> Void) {
+        let queue = CDVPhotos.imageWatchdogQueue
+        let manager = PHImageManager.default()
+        let started = Date()
+        var finished = false
+        var lastActivity = Date()
+        var usingFallback = false
+        var requestId: PHImageRequestID = PHInvalidImageRequestID
+        var ticker: DispatchSourceTimer? = nil
+
+        // everything below runs on `queue`; the completion gets its own thread because the
+        // caller decodes and re-encodes the photo, which must not hold the watchdog queue
+        func finish(_ result: FullImage?, _ error: String?) {
+            if finished { return }
+            finished = true
+            ticker?.cancel()
+            DispatchQueue.global(qos: .userInitiated).async {
+                completion(result, error)
+            }
+        }
+
+        let progress: PHAssetImageProgressHandler = { (value, error, _, _) in
+            queue.async {
+                lastActivity = Date()
+                if let error = error {
+                    NSLog("CDVPhotos: full-size image progress error for %@: %@", asset.localIdentifier, error.localizedDescription)
+                } else {
+                    NSLog("CDVPhotos: full-size image progress for %@: %.2f", asset.localIdentifier, value)
+                }
+            }
+        }
+
+        func startPrimary() {
+            let options = PHImageRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.progressHandler = progress
+            requestId = manager.requestImageDataAndOrientation(for: asset, options: options) { (data, _, orientation, info) in
+                queue.async {
+                    if finished { return }
+                    // our own cancel, on the way to the fallback - nothing to report
+                    if let cancelled = info?[PHImageCancelledKey] as? Bool, cancelled { return }
+                    if let error = info?[PHImageErrorKey] as? Error {
+                        if !usingFallback { finish(nil, error.localizedDescription) }
+                        return
+                    }
+                    guard let data = data else {
+                        if !usingFallback { finish(nil, Constants.ePhotoNoData) }
+                        return
+                    }
+                    finish(.data(data, orientation), nil)
+                }
+            }
+        }
+
+        func startFallback() {
+            let options = PHImageRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.deliveryMode = .highQualityFormat
+            options.resizeMode = .none
+            options.progressHandler = progress
+            requestId = manager.requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .default, options: options) { (image, info) in
+                queue.async {
+                    if finished { return }
+                    if let cancelled = info?[PHImageCancelledKey] as? Bool, cancelled { return }
+                    if let degraded = info?[PHImageResultIsDegradedKey] as? Bool, degraded { return }
+                    if let error = info?[PHImageErrorKey] as? Error {
+                        finish(nil, error.localizedDescription)
+                        return
+                    }
+                    guard let image = image else {
+                        finish(nil, Constants.ePhotoNoData)
+                        return
+                    }
+                    finish(.image(image), nil)
+                }
+            }
+        }
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler {
+            if finished { return }
+            let now = Date()
+            let silentFor = now.timeIntervalSince(lastActivity)
+            let runningFor = now.timeIntervalSince(started)
+            if silentFor <= CDVPhotos.imageStallSeconds && runningFor <= CDVPhotos.imageOverallSeconds { return }
+            manager.cancelImageRequest(requestId)
+            if usingFallback || runningFor > CDVPhotos.imageOverallSeconds {
+                NSLog("CDVPhotos: full-size image for %@ gave up (silent %.0fs, running %.0fs, fallback %d)", asset.localIdentifier, silentFor, runningFor, usingFallback ? 1 : 0)
+                finish(nil, Constants.ePhotoStalled)
+                return
+            }
+            NSLog("CDVPhotos: full-size image for %@ silent for %.0fs - retrying via requestImage", asset.localIdentifier, silentFor)
+            usingFallback = true
+            lastActivity = now
+            startFallback()
+        }
+        ticker = timer
+        timer.resume()
+        queue.async { startPrimary() }
+    }
+
+    // the sRGB, orientation-baked JPEG the app has always been handed.  sends the failure
+    // itself and answers nil, so a caller just returns
+    private func jpegData(from result: FullImage?, error: String?, command: CDVInvokedUrlCommand) -> Data? {
+        if let error = error {
+            failure(command: command, message: error)
+            return nil
+        }
+        var loaded: UIImage? = nil
+        switch result {
+        case .data(let data, let orientation)?:
+            if let cgImage = UIImage(data: data)?.cgImage {
+                loaded = UIImage(cgImage: cgImage, scale: 1.0, orientation: convertOrientation(orientation))
+            }
+        case .image(let image)?:
+            loaded = image
+        case nil:
+            break
+        }
+        guard let image = loaded else {
+            failure(command: command, message: "Could not create CGImage from data.")
+            return nil
+        }
+        guard let finalImage = normalizeAndConvertToSRGB(image) else {
+            failure(command: command, message: "Could not convert colorspace")
+            return nil
+        }
+        guard let mediaData = finalImage.jpegData(compressionQuality: 0.8) else {
+            failure(command: command, message: "Could not get JPEG representation of image.")
+            return nil
+        }
+        return mediaData
+    }
+
     @objc(image:)
     func image(command: CDVInvokedUrlCommand) {
         checkPermissions(of: command) { [weak self] in
             guard let self = self else { return }
-            
             guard let asset = self.assetByCommand(command: command) else {
                 // assetByCommand already sends failure
                 return
             }
-
-            // In Swift, requestImageDataAndOrientation is preferred over requestImageData for modern handling
-            let reqOptions = PHImageRequestOptions()
-            reqOptions.isNetworkAccessAllowed = true
-            reqOptions.progressHandler = { (progress, error, stop, info) in
-                print("progress: \(String(format: "%.2f", progress)), info: \(info ?? [:])")
-                if let error = error {
-                    print("error: \(error)")
-                    stop.pointee = true
-                }
-            }
-            // reqOptions.isSynchronous = false // Prefer async for better UX, though original might have implied sync by its structure
-            // reqOptions.version = .current // Get the most recent version including edits
-            // reqOptions.deliveryMode = .highQualityFormat
-
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: reqOptions) { [weak self] (imageData, dataUTI, orientation, info) in
-                guard let self = self else { return }
-
-                if let error = info?[PHImageErrorKey] as? Error {
-                    self.failure(command: command, message: error.localizedDescription)
-                    return
-                }
-                guard let data = imageData else {
-                    self.failure(command: command, message: Constants.ePhotoNoData)
-                    return
-                }
-                
-                guard let cgImage = UIImage(data: data)?.cgImage else {
-                    self.failure(command: command, message: "Could not create CGImage from data.")
-                    return
-                }
-                
-                // Convert CGImagePropertyOrientation to UIImage.Orientation
-                let uiOrientation = self.convertOrientation(orientation)
-                let image = UIImage(cgImage: cgImage, scale: 1.0, orientation: uiOrientation)
-                
-                // Now normalize and convert to sRGB in one step
-                guard let finalImage = self.normalizeAndConvertToSRGB(image) else {
-                    self.failure(command: command, message: "Could not convert colorspace")
-                    return
-                }
-                
-                guard let mediaData = finalImage.jpegData(compressionQuality: 0.8) else {
-                    self.failure(command: command, message: "Could not get JPEG representation of image.")
-                    return
-                }
-                self.success(command: command, data: mediaData)
+            self.fetchFullImage(asset) { (result, error) in
+                guard let data = self.jpegData(from: result, error: error, command: command) else { return }
+                self.success(command: command, data: data)
             }
         }
     }
-    
+
+    // image(), except the JPEG is written to <tmp>/<fileName> (cordova-plugin-file's TEMPORARY
+    // root) and the file url comes back.  a 12MP photo re-encoded at 0.8 is several MB; as an
+    // ArrayBuffer that is a third bigger again in base64 and crosses the bridge in one
+    // evaluateJavaScript call, which is slow and the one place a very large photo can vanish
+    // without a callback.  a file is the cheap way, and the app wanted a file anyway
+    @objc(imageToFile:)
+    func imageToFile(command: CDVInvokedUrlCommand) {
+        checkPermissions(of: command) { [weak self] in
+            guard let self = self else { return }
+            guard let asset = self.assetByCommand(command: command) else { return }
+            let requested: String = self.arg(of: command, at: 1, default: "")
+            let fileName = (requested as NSString).lastPathComponent
+            if fileName.isEmpty {
+                self.failure(command: command, message: "imageToFile needs a file name")
+                return
+            }
+            self.fetchFullImage(asset) { (result, error) in
+                guard let data = self.jpegData(from: result, error: error, command: command) else { return }
+                let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+                do {
+                    try data.write(to: url, options: .atomic)
+                } catch let writeError {
+                    self.failure(command: command, message: "Could not write image file: \(writeError.localizedDescription)")
+                    return
+                }
+                self.success(command: command, message: url.absoluteString)
+            }
+        }
+    }
+
     func normalizeAndConvertToSRGB(_ image: UIImage) -> UIImage? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = image.scale
